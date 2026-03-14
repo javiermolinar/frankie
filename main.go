@@ -12,9 +12,10 @@ import (
 )
 
 type Config struct {
-	Port           string
-	ProwlarrURL    string
-	ProwlarrAPIKey string
+	Port            string
+	ProwlarrURL     string
+	ProwlarrAPIKey  string
+	AlldebridAPIKey string
 }
 
 type Manifest struct {
@@ -64,15 +65,14 @@ type SeriesRequest struct {
 }
 
 const (
-	mockVideoURL = "https://cdn.frankie.local/media/The.Matrix.1999.1080p.BluRay.x264.mkv"
 	cinemetaBase = "https://v3-cinemeta.strem.io/meta"
 )
 
 var manifest = Manifest{
-	ID:          "com.javimolina.frankie",
+	ID:          "com.frankie",
 	Version:     "0.1.0",
 	Name:        "Frankie",
-	Description: "Simple Stremio addon bootstrap",
+	Description: "Search and find, locally",
 	Resources:   []string{"stream"},
 	Types:       []string{"movie", "series"},
 	IDPrefixes:  []string{"tt"},
@@ -152,11 +152,26 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		results = searchResults
-		logProwlarrLinks(results)
+	}
+
+	readyResults := make([]ProwlarrSearchResult, 0, len(results))
+	for _, sr := range results {
+		link, err := getStreamLink(sr.Guid)
+		if err != nil {
+			continue
+		}
+		link = strings.TrimSpace(link)
+		if link == "" {
+			continue
+		}
+
+		sr.DownloadURL = link
+		fmt.Println(link)
+		readyResults = append(readyResults, sr)
 	}
 
 	respondJSON(w, http.StatusOK, StreamResponse{
-		Streams: buildStreams(contentType, results),
+		Streams: buildStreams(contentType, readyResults),
 	})
 }
 
@@ -261,9 +276,10 @@ func withCORS(next http.Handler) http.Handler {
 
 func loadConfig() Config {
 	return Config{
-		Port:           envOrDefault("PORT", "3593"),
-		ProwlarrURL:    strings.TrimRight(strings.TrimSpace(os.Getenv("PROWLARR_URL")), "/"),
-		ProwlarrAPIKey: strings.TrimSpace(os.Getenv("PROWLARR_API_KEY")),
+		Port:            envOrDefault("PORT", "3593"),
+		ProwlarrURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("PROWLARR_URL")), "/"),
+		ProwlarrAPIKey:  strings.TrimSpace(os.Getenv("PROWLARR_API_KEY")),
+		AlldebridAPIKey: strings.TrimSpace(os.Getenv("ALLDEBRID_API_KEY")),
 	}
 }
 

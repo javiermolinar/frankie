@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -181,7 +180,7 @@ func buildStreams(contentType string, results []ProwlarrSearchResult) []Stream {
 		streams = append(streams, Stream{
 			Name:        qualityLabel,
 			Description: description,
-			URL:         buildFakeStreamURL(result),
+			URL:         result.DownloadURL,
 			BehaviorHints: &BehaviorHints{
 				NotWebReady: true,
 				Filename:    streamFilename(result),
@@ -414,18 +413,6 @@ func codecScore(value string) int {
 	}
 }
 
-func buildFakeStreamURL(result ProwlarrSearchResult) string {
-	identifier := result.Guid
-	if identifier == "" {
-		identifier = strconv.Itoa(result.ID)
-	}
-	if identifier == "" {
-		identifier = "unknown"
-	}
-
-	return fmt.Sprintf("https://cdn.frankie.local/stream/%s/%s", url.PathEscape(identifier), url.PathEscape(streamFilename(result)))
-}
-
 func streamFilename(result ProwlarrSearchResult) string {
 	fileName := result.FileName
 	if fileName == "" {
@@ -472,14 +459,6 @@ func humanSize(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
-}
-
-func logProwlarrLinks(results []ProwlarrSearchResult) {
-	for _, result := range results {
-		if result.Guid != "" {
-			log.Println(result.Guid)
-		}
-	}
 }
 
 func prowlarrConfigured() bool {
