@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	ProwlarrURL     string
 	ProwlarrAPIKey  string
 	AlldebridAPIKey string
+	PublicURL       string
 }
 
 type Manifest struct {
@@ -26,6 +28,8 @@ type Manifest struct {
 	Resources   []string `json:"resources"`
 	Types       []string `json:"types"`
 	IDPrefixes  []string `json:"idPrefixes,omitempty"`
+	Logo        string   `json:"logo,omitempty"`
+	Background  string   `json:"background,omitempty"`
 }
 
 type StreamResponse struct {
@@ -65,7 +69,8 @@ type SeriesRequest struct {
 }
 
 const (
-	cinemetaBase = "https://v3-cinemeta.strem.io/meta"
+	cinemetaBase             = "https://v3-cinemeta.strem.io/meta"
+	debridResolveConcurrency = 4
 )
 
 var manifest = Manifest{
@@ -88,6 +93,7 @@ func main() {
 	mux.HandleFunc("/", homeHandler)
 	mux.HandleFunc("/manifest.json", manifestHandler)
 	mux.HandleFunc("/stream/", streamHandler)
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("assets"))))
 
 	addr := ":" + config.Port
 	log.Printf("listening on %s", addr)
@@ -120,7 +126,31 @@ func manifestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, manifest)
+	respondJSON(w, http.StatusOK, manifestForRequest(r))
+}
+
+func manifestForRequest(r *http.Request) Manifest {
+	m := manifest
+	baseURL := addonBaseURL(r)
+	m.Logo = baseURL + "/assets/logo.png"
+	m.Background = baseURL + "/assets/background.jpg"
+	return m
+}
+
+func addonBaseURL(r *http.Request) string {
+	if config.PublicURL != "" {
+		return strings.TrimRight(config.PublicURL, "/")
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = strings.Split(forwardedProto, ",")[0]
+	}
+
+	return scheme + "://" + r.Host
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
@@ -134,45 +164,91 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
-	lookupID := metadataLookupID(contentType, id)
-	meta, _, err := fetchCinemeta(contentType, lookupID)
-	if err != nil {
-		respondJSON(w, http.StatusOK, StreamResponse{Streams: []Stream{}})
-		return
-	}
-
 	var results []ProwlarrSearchResult
 
-	query := buildProwlarrQuery(contentType, id, meta)
-	if query != "" && prowlarrConfigured() {
-		searchResults, _, err := searchProwlarr(query)
+	if prowlarrConfigured() {
+		searchResults, _, err := searchProwlarr(contentType, id)
 		if err != nil {
+			log.Printf("prowlarr search failed type=%s id=%s err=%v", contentType, id, err)
 			respondJSON(w, http.StatusOK, StreamResponse{Streams: []Stream{}})
 			return
 		}
 		results = searchResults
 	}
 
-	readyResults := make([]ProwlarrSearchResult, 0, len(results))
-	for _, sr := range results {
-		link, err := getStreamLink(sr.Guid)
-		if err != nil {
-			continue
-		}
-		link = strings.TrimSpace(link)
-		if link == "" {
-			continue
-		}
-
-		sr.DownloadURL = link
-		fmt.Println(link)
-		readyResults = append(readyResults, sr)
-	}
+	sortedResults := sortProwlarrResults(results)
+	readyResults := resolveDebridResults(sortedResults)
 
 	respondJSON(w, http.StatusOK, StreamResponse{
 		Streams: buildStreams(contentType, readyResults),
 	})
+}
+
+func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamResult {
+	if len(sortedResults) == 0 {
+		return []DebridStreamResult{}
+	}
+
+	workerCount := debridResolveConcurrency
+	if len(sortedResults) < workerCount {
+		workerCount = len(sortedResults)
+	}
+	if workerCount < 1 {
+		return []DebridStreamResult{}
+	}
+
+	sem := make(chan struct{}, workerCount)
+	resolved := make([]DebridStreamResult, len(sortedResults))
+
+	var wg sync.WaitGroup
+	for i, sr := range sortedResults {
+		wg.Add(1)
+		go func(index int, searchResult ProwlarrSearchResult) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			magnetURI, err := resolveMagnetURI(searchResult)
+			if err != nil {
+				log.Printf("resolveMagnetURI error: %v", err)
+				return
+			}
+
+			debridResult, err := getStreamLink(magnetURI)
+			if err != nil {
+				return
+			}
+
+			debridResult.URL = strings.TrimSpace(debridResult.URL)
+			if debridResult.URL == "" {
+				return
+			}
+			if debridResult.Filename == "" {
+				debridResult.Filename = streamFilename(searchResult)
+			}
+			if debridResult.Size <= 0 {
+				debridResult.Size = searchResult.Size
+			}
+			if debridResult.Host == "" {
+				debridResult.Host = "alldebrid"
+			}
+
+			resolved[index] = debridResult
+		}(i, sr)
+	}
+
+	wg.Wait()
+
+	readyResults := make([]DebridStreamResult, 0, len(resolved))
+	for _, result := range resolved {
+		if strings.TrimSpace(result.URL) == "" {
+			continue
+		}
+		readyResults = append(readyResults, result)
+	}
+
+	return readyResults
 }
 
 func parseStreamPath(path string) (contentType, id string, ok bool) {
@@ -280,6 +356,7 @@ func loadConfig() Config {
 		ProwlarrURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("PROWLARR_URL")), "/"),
 		ProwlarrAPIKey:  strings.TrimSpace(os.Getenv("PROWLARR_API_KEY")),
 		AlldebridAPIKey: strings.TrimSpace(os.Getenv("ALLDEBRID_API_KEY")),
+		PublicURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_URL")), "/"),
 	}
 }
 

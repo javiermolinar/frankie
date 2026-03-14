@@ -68,7 +68,18 @@ var (
 	resolutionPattern = regexp.MustCompile(`(?i)\b(4320p|2160p|1080p|720p|480p)\b`)
 	codecPattern      = regexp.MustCompile(`(?i)\b(x265|x264|h\.?265|h\.?264|hevc|av1)\b`)
 	audioPattern      = regexp.MustCompile(`(?i)\b(truehd|atmos|ddp?\+?\s?\d\.\d|dd\s?\d\.\d|dts(?:-hd)?(?:\.ma)?|aac(?:\s?\d\.\d)?)\b`)
+	titleCleanPattern = regexp.MustCompile(`[^a-z0-9]+`)
+	episodeTagPattern = regexp.MustCompile(`(?i)^s\d{1,2}e\d{1,3}$`)
 )
+
+var ignoredTitleTokens = map[string]struct{}{
+	"the": {}, "a": {}, "an": {}, "and": {}, "of": {}, "to": {}, "in": {}, "on": {}, "for": {}, "with": {},
+	"movie": {}, "proper": {}, "repack": {}, "extended": {}, "internal": {}, "dubbed": {}, "subs": {},
+	"x264": {}, "x265": {}, "h264": {}, "h265": {}, "hevc": {}, "av1": {},
+	"webrip": {}, "webdl": {}, "web": {}, "bluray": {}, "brrip": {}, "bdrip": {}, "hdtv": {}, "hdrip": {},
+	"hdr": {}, "dv": {}, "remux": {}, "10bit": {}, "8bit": {},
+	"aac": {}, "dts": {}, "dd": {}, "ddp": {}, "atmos": {},
+}
 
 func parseSeriesRequest(id string) (SeriesRequest, bool) {
 	parts := strings.Split(id, ":")
@@ -93,7 +104,25 @@ func parseSeriesRequest(id string) (SeriesRequest, bool) {
 	}, true
 }
 
-func buildProwlarrQuery(contentType, id string, meta CinemetaMeta) string {
+func buildProwlarrQuery(contentType, id string) (query, searchType string, ok bool) {
+	lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
+	if lookupID == "" {
+		return "", "", false
+	}
+
+	switch contentType {
+	case "movie":
+		searchType = "movie"
+	case "series":
+		searchType = "tvsearch"
+	default:
+		return "", "", false
+	}
+
+	return fmt.Sprintf("{ImdbId:%s}", lookupID), searchType, true
+}
+
+func buildProwlarrFallbackQuery(contentType, id string, meta CinemetaMeta) string {
 	name := strings.TrimSpace(meta.Name)
 	if name == "" {
 		return ""
@@ -117,7 +146,73 @@ func buildProwlarrQuery(contentType, id string, meta CinemetaMeta) string {
 	}
 }
 
-func searchProwlarr(query string) ([]ProwlarrSearchResult, string, error) {
+func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, error) {
+	query, searchType, ok := buildProwlarrQuery(contentType, id)
+	if !ok {
+		return nil, "", fmt.Errorf("cannot build prowlarr query")
+	}
+
+	lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
+	var cinemetaMeta CinemetaMeta
+	hasCinemeta := false
+	if lookupID != "" {
+		meta, _, err := fetchCinemeta(contentType, lookupID)
+		if err == nil {
+			cinemetaMeta = meta
+			hasCinemeta = true
+		}
+	}
+
+	attemptedFallbackFirst := false
+	if contentType == "series" && hasCinemeta {
+		fallbackQuery := buildProwlarrFallbackQuery(contentType, id, cinemetaMeta)
+		if fallbackQuery != "" {
+			attemptedFallbackFirst = true
+			fallbackResults, fallbackRaw, err := runProwlarrSearch(fallbackQuery, "tvsearch", 20)
+			if err == nil {
+				fallbackResults = filterResultsByTitleSimilarity(fallbackResults, cinemetaMeta.Name)
+				if len(fallbackResults) > 0 {
+					return fallbackResults, fallbackRaw, nil
+				}
+			}
+		}
+	}
+
+	results, raw, err := runProwlarrSearch(query, searchType, 20)
+	if err != nil {
+		return nil, raw, err
+	}
+	if hasCinemeta {
+		results = filterResultsByTitleSimilarity(results, cinemetaMeta.Name)
+	}
+	if len(results) > 0 {
+		return results, raw, nil
+	}
+
+	if !hasCinemeta || attemptedFallbackFirst {
+		return results, raw, nil
+	}
+
+	fallbackQuery := buildProwlarrFallbackQuery(contentType, id, cinemetaMeta)
+	if fallbackQuery == "" {
+		return results, raw, nil
+	}
+
+	fallbackSearchType := ""
+	if contentType == "series" {
+		fallbackSearchType = "tvsearch"
+	}
+
+	fallbackResults, fallbackRaw, err := runProwlarrSearch(fallbackQuery, fallbackSearchType, 20)
+	if err != nil {
+		return results, raw, nil
+	}
+
+	fallbackResults = filterResultsByTitleSimilarity(fallbackResults, cinemetaMeta.Name)
+	return fallbackResults, fallbackRaw, nil
+}
+
+func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
 	baseURL, err := url.Parse(config.ProwlarrURL)
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid PROWLARR_URL: %w", err)
@@ -126,6 +221,12 @@ func searchProwlarr(query string) ([]ProwlarrSearchResult, string, error) {
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/api/v1/search"
 	queryValues := baseURL.Query()
 	queryValues.Set("query", query)
+	if searchType != "" {
+		queryValues.Set("type", searchType)
+	}
+	if limit > 0 {
+		queryValues.Set("limit", strconv.Itoa(limit))
+	}
 	baseURL.RawQuery = queryValues.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
@@ -159,33 +260,222 @@ func searchProwlarr(query string) ([]ProwlarrSearchResult, string, error) {
 	return results, raw, nil
 }
 
-func buildStreams(contentType string, results []ProwlarrSearchResult) []Stream {
+func filterResultsByTitleSimilarity(results []ProwlarrSearchResult, expectedTitle string) []ProwlarrSearchResult {
+	expectedTokens := tokenizeTitle(expectedTitle)
+	if len(expectedTokens) == 0 {
+		return results
+	}
+
+	filtered := make([]ProwlarrSearchResult, 0, len(results))
+	for _, result := range results {
+		if titleSimilarity(expectedTokens, result.Title) >= 0.6 {
+			filtered = append(filtered, result)
+		}
+	}
+
+	return filtered
+}
+
+func titleSimilarity(expectedTokens []string, candidate string) float64 {
+	candidateTokens := tokenizeTitle(candidate)
+	if len(candidateTokens) == 0 || len(expectedTokens) == 0 {
+		return 0
+	}
+
+	expectedCompact := strings.Join(expectedTokens, "")
+	candidateCompact := strings.Join(candidateTokens, "")
+	if expectedCompact != "" && (strings.Contains(candidateCompact, expectedCompact) || strings.Contains(expectedCompact, candidateCompact)) {
+		return 1
+	}
+
+	candidateSet := make(map[string]struct{}, len(candidateTokens))
+	for _, token := range candidateTokens {
+		candidateSet[token] = struct{}{}
+	}
+
+	matches := 0
+	for _, token := range expectedTokens {
+		if _, ok := candidateSet[token]; ok {
+			matches++
+		}
+	}
+
+	return float64(matches) / float64(len(expectedTokens))
+}
+
+func tokenizeTitle(value string) []string {
+	clean := strings.ToLower(strings.TrimSpace(value))
+	if clean == "" {
+		return nil
+	}
+
+	clean = titleCleanPattern.ReplaceAllString(clean, " ")
+	rawTokens := strings.Fields(clean)
+	if len(rawTokens) == 0 {
+		return nil
+	}
+
+	tokens := make([]string, 0, len(rawTokens))
+	for _, token := range rawTokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if _, ignored := ignoredTitleTokens[token]; ignored {
+			continue
+		}
+		if episodeTagPattern.MatchString(token) {
+			continue
+		}
+		if strings.HasSuffix(token, "p") && len(token) >= 4 {
+			digits := strings.TrimSuffix(token, "p")
+			if _, err := strconv.Atoi(digits); err == nil {
+				continue
+			}
+		}
+		tokens = append(tokens, token)
+	}
+
+	return tokens
+}
+
+func resolveMagnetURI(result ProwlarrSearchResult) (string, error) {
+	candidates := []string{
+		strings.TrimSpace(result.MagnetURL),
+		strings.TrimSpace(result.Guid),
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+
+		magnetURI, err := extractMagnetURI(candidate)
+		if err == nil {
+			return magnetURI, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+
+	return "", fmt.Errorf("no magnet url or guid in search result")
+}
+
+func extractMagnetURI(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("empty magnet value")
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid magnet value: %w", err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "magnet" {
+		return value, nil
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+
+	return resolveMagnetFromRedirect(value, 6)
+}
+
+func resolveMagnetFromRedirect(startURL string, maxHops int) (string, error) {
+	client := &http.Client{
+		Timeout: httpClient.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	current := startURL
+	for hop := 0; hop < maxHops; hop++ {
+		req, err := http.NewRequest(http.MethodGet, current, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resp.Body.Close()
+		if location == "" {
+			return "", fmt.Errorf("missing redirect location from %s (status=%d)", current, resp.StatusCode)
+		}
+
+		currentParsed, err := url.Parse(current)
+		if err != nil {
+			return "", err
+		}
+		locationParsed, err := url.Parse(location)
+		if err != nil {
+			return "", fmt.Errorf("invalid redirect location %q: %w", location, err)
+		}
+
+		next := location
+		if !locationParsed.IsAbs() {
+			next = currentParsed.ResolveReference(locationParsed).String()
+			locationParsed, _ = url.Parse(next)
+		}
+
+		nextScheme := strings.ToLower(locationParsed.Scheme)
+		switch nextScheme {
+		case "magnet":
+			return next, nil
+		case "http", "https":
+			current = next
+		default:
+			return "", fmt.Errorf("unsupported redirect protocol %q", locationParsed.Scheme)
+		}
+	}
+
+	return "", fmt.Errorf("too many redirects resolving magnet url")
+}
+
+func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 	if len(results) == 0 {
 		return []Stream{}
 	}
 
-	sortedResults := sortProwlarrResults(results)
-	maxResults := min(len(sortedResults), 10)
-
+	maxResults := min(len(results), 10)
 	streams := make([]Stream, 0, maxResults)
+
 	for i := range maxResults {
-		result := sortedResults[i]
-		info := parseReleaseInfo(result.Title)
-		description := buildProwlarrDescription(result, info)
-		if description == "" {
+		result := results[i]
+		if strings.TrimSpace(result.URL) == "" {
 			continue
 		}
 
-		qualityLabel := buildQualityLabel(contentType, info)
+		name := "⚡ Alldebrid"
+		descriptionParts := []string{}
+		if result.Filename != "" {
+			descriptionParts = append(descriptionParts, "🧾 "+result.Filename)
+		}
+		if result.Size > 0 {
+			descriptionParts = append(descriptionParts, "💾 "+humanSize(result.Size))
+		}
+		if result.Host != "" {
+			descriptionParts = append(descriptionParts, "🌐 "+result.Host)
+		}
+
 		streams = append(streams, Stream{
-			Name:        qualityLabel,
-			Description: description,
-			URL:         result.DownloadURL,
+			Name:        name,
+			Description: strings.Join(descriptionParts, " · "),
+			URL:         result.URL,
 			BehaviorHints: &BehaviorHints{
 				NotWebReady: true,
-				Filename:    streamFilename(result),
+				Filename:    result.Filename,
 				VideoSize:   result.Size,
-				BingeGroup:  buildBingeGroup(contentType, qualityLabel),
+				BingeGroup:  "frankie-" + contentType + "-alldebrid",
 			},
 		})
 	}
