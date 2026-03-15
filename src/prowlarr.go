@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type ProwlarrSearchResult struct {
@@ -143,59 +144,78 @@ func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, err
 		return nil, "", fmt.Errorf("cannot build prowlarr query")
 	}
 
-	lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
-	var cinemetaMeta CinemetaMeta
-	hasCinemeta := false
-	if lookupID != "" {
+	type searchOutcome struct {
+		attempted bool
+		results   []ProwlarrSearchResult
+		raw       string
+		err       error
+	}
+
+	var primary searchOutcome
+	var fallback searchOutcome
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		primary.attempted = true
+		primary.results, primary.raw, primary.err = runProwlarrSearch(query, searchType, prowlarrSearchLimit)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
+		if lookupID == "" {
+			return
+		}
+
 		meta, _, err := fetchCinemeta(contentType, lookupID)
-		if err == nil {
-			cinemetaMeta = meta
-			hasCinemeta = true
+		if err != nil {
+			return
+		}
+
+		fallbackQuery := buildProwlarrFallbackQuery(contentType, id, meta)
+		if fallbackQuery == "" {
+			return
+		}
+
+		fallbackSearchType := ""
+		if contentType == "series" {
+			fallbackSearchType = "tvsearch"
+		}
+
+		fallback.attempted = true
+		fallback.results, fallback.raw, fallback.err = runProwlarrSearch(fallbackQuery, fallbackSearchType, prowlarrSearchLimit)
+	}()
+
+	wg.Wait()
+
+	if primary.err != nil {
+		if fallback.attempted && fallback.err == nil {
+			return dedupeProwlarrResults(fallback.results), fallback.raw, nil
+		}
+		return nil, primary.raw, primary.err
+	}
+
+	merged := append([]ProwlarrSearchResult{}, primary.results...)
+	if fallback.attempted && fallback.err == nil && len(fallback.results) > 0 {
+		merged = append(merged, fallback.results...)
+	}
+
+	merged = dedupeProwlarrResults(merged)
+	raw := strings.TrimSpace(primary.raw)
+	if strings.TrimSpace(fallback.raw) != "" {
+		if raw == "" {
+			raw = fallback.raw
+		} else {
+			raw = raw + "\n" + fallback.raw
 		}
 	}
 
-	attemptedFallbackFirst := false
-	if contentType == "series" && hasCinemeta {
-		fallbackQuery := buildProwlarrFallbackQuery(contentType, id, cinemetaMeta)
-		if fallbackQuery != "" {
-			attemptedFallbackFirst = true
-			fallbackResults, fallbackRaw, err := runProwlarrSearch(fallbackQuery, "tvsearch", 20)
-			if err == nil {
-				if len(fallbackResults) > 0 {
-					return fallbackResults, fallbackRaw, nil
-				}
-			}
-		}
-	}
-
-	results, raw, err := runProwlarrSearch(query, searchType, 20)
-	if err != nil {
-		return nil, raw, err
-	}
-	if len(results) > 0 {
-		return results, raw, nil
-	}
-
-	if !hasCinemeta || attemptedFallbackFirst {
-		return results, raw, nil
-	}
-
-	fallbackQuery := buildProwlarrFallbackQuery(contentType, id, cinemetaMeta)
-	if fallbackQuery == "" {
-		return results, raw, nil
-	}
-
-	fallbackSearchType := ""
-	if contentType == "series" {
-		fallbackSearchType = "tvsearch"
-	}
-
-	fallbackResults, fallbackRaw, err := runProwlarrSearch(fallbackQuery, fallbackSearchType, 20)
-	if err != nil {
-		return results, raw, nil
-	}
-
-	return fallbackResults, fallbackRaw, nil
+	return merged, raw, nil
 }
 
 func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
@@ -354,11 +374,9 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 		return []Stream{}
 	}
 
-	maxResults := min(len(results), 10)
-	streams := make([]Stream, 0, maxResults)
+	streams := make([]Stream, 0, len(results))
 
-	for i := range maxResults {
-		result := results[i]
+	for _, result := range results {
 		if strings.TrimSpace(result.URL) == "" {
 			continue
 		}
@@ -399,11 +417,78 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 	return streams
 }
 
+func dedupeProwlarrResults(results []ProwlarrSearchResult) []ProwlarrSearchResult {
+	if len(results) == 0 {
+		return []ProwlarrSearchResult{}
+	}
+
+	seen := make(map[string]struct{}, len(results))
+	deduped := make([]ProwlarrSearchResult, 0, len(results))
+	for _, result := range results {
+		key := prowlarrResultKey(result)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		deduped = append(deduped, result)
+	}
+
+	return deduped
+}
+
+func prowlarrResultKey(result ProwlarrSearchResult) string {
+	if infoHash := strings.ToLower(strings.TrimSpace(result.InfoHash)); infoHash != "" {
+		return "infohash:" + infoHash
+	}
+	if magnetURL := strings.TrimSpace(result.MagnetURL); magnetURL != "" {
+		return "magnet:" + magnetURL
+	}
+	if downloadURL := strings.TrimSpace(result.DownloadURL); downloadURL != "" {
+		return "download:" + downloadURL
+	}
+	if guid := strings.TrimSpace(result.Guid); guid != "" {
+		return "guid:" + guid
+	}
+	return ""
+}
+
+func prowlarrQualityScore(result ProwlarrSearchResult) int {
+	resolution := extractResolutionFromText(result.Title + " " + result.FileName)
+	switch resolution {
+	case "4320p":
+		return 7
+	case "2160p":
+		return 6
+	case "1440p":
+		return 5
+	case "1080p":
+		return 4
+	case "720p":
+		return 3
+	case "576p":
+		return 2
+	case "480p":
+		return 1
+	default:
+		return 0
+	}
+}
+
 func sortProwlarrResults(results []ProwlarrSearchResult) []ProwlarrSearchResult {
 	sorted := append([]ProwlarrSearchResult(nil), results...)
 	sort.SliceStable(sorted, func(i, j int) bool {
+		leftQuality := prowlarrQualityScore(sorted[i])
+		rightQuality := prowlarrQualityScore(sorted[j])
+		if leftQuality != rightQuality {
+			return leftQuality > rightQuality
+		}
 		if sorted[i].Size != sorted[j].Size {
 			return sorted[i].Size > sorted[j].Size
+		}
+		if sorted[i].Seeders != sorted[j].Seeders {
+			return sorted[i].Seeders > sorted[j].Seeders
 		}
 		return sorted[i].Title < sorted[j].Title
 	})

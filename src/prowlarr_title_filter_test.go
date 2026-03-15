@@ -60,3 +60,32 @@ func TestBuildStreamsIncludesQualityInName(t *testing.T) {
 		t.Fatalf("unexpected stream description: %q", streams[0].Description)
 	}
 }
+
+func TestSortProwlarrResultsPrefersHigherQuality(t *testing.T) {
+	results := []ProwlarrSearchResult{
+		{Title: "Movie.2024.1080p.WEB-DL", Size: 1_000},
+		{Title: "Movie.2024.2160p.WEB-DL", Size: 900},
+		{Title: "Movie.2024.720p.WEB-DL", Size: 2_000},
+	}
+
+	sorted := sortProwlarrResults(results)
+	if got, want := sorted[0].Title, "Movie.2024.2160p.WEB-DL"; got != want {
+		t.Fatalf("unexpected first result %q, want %q", got, want)
+	}
+	if got, want := sorted[1].Title, "Movie.2024.1080p.WEB-DL"; got != want {
+		t.Fatalf("unexpected second result %q, want %q", got, want)
+	}
+}
+
+func TestDedupeProwlarrResultsByInfoHash(t *testing.T) {
+	results := []ProwlarrSearchResult{
+		{Title: "A.1080p", InfoHash: "abc", Size: 100},
+		{Title: "A.1080p duplicate", InfoHash: "ABC", Size: 101},
+		{Title: "B.2160p", InfoHash: "def", Size: 200},
+	}
+
+	deduped := dedupeProwlarrResults(results)
+	if len(deduped) != 2 {
+		t.Fatalf("expected 2 unique results, got %d", len(deduped))
+	}
+}

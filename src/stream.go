@@ -31,18 +31,24 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		results = searchResults
+		log.Printf("prowlarr search results type=%s id=%s count=%d", contentType, id, len(results))
 	}
 
 	sortedResults := sortProwlarrResults(results)
-	if len(sortedResults) > 10 {
-		sortedResults = sortedResults[:10]
+	if len(sortedResults) > debridResolveCandidateLimit {
+		sortedResults = sortedResults[:debridResolveCandidateLimit]
 	}
+	log.Printf("debrid candidate results type=%s id=%s count=%d", contentType, id, len(sortedResults))
 	if !alldebridConfigured() {
 		respondJSON(w, http.StatusOK, StreamResponse{Streams: []Stream{}})
 		return
 	}
 
 	readyResults := resolveDebridResults(sortedResults)
+	if len(readyResults) > streamResponseLimit {
+		readyResults = readyResults[:streamResponseLimit]
+	}
+	log.Printf("ready stream results type=%s id=%s count=%d", contentType, id, len(readyResults))
 
 	respondJSON(w, http.StatusOK, StreamResponse{
 		Streams: buildStreams(contentType, readyResults),
@@ -65,6 +71,14 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 	sem := make(chan struct{}, workerCount)
 	resolved := make([]DebridStreamResult, len(sortedResults))
 
+	failureCounts := map[string]int{}
+	var failureMu sync.Mutex
+	countFailure := func(reason string) {
+		failureMu.Lock()
+		failureCounts[reason]++
+		failureMu.Unlock()
+	}
+
 	var wg sync.WaitGroup
 	for i, sr := range sortedResults {
 		wg.Add(1)
@@ -76,12 +90,14 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 
 			magnetURI, err := resolveMagnetURI(searchResult)
 			if err != nil {
+				countFailure("magnet_resolve")
 				log.Printf("resolveMagnetURI error: %v", err)
 				return
 			}
 
 			debridResult, err := getStreamLink(magnetURI)
 			if err != nil {
+				countFailure(classifyDebridError(err))
 				return
 			}
 
@@ -109,6 +125,10 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 
 	wg.Wait()
 
+	if len(failureCounts) > 0 {
+		log.Printf("debrid resolve failures total=%d details=%v", len(sortedResults), failureCounts)
+	}
+
 	readyResults := make([]DebridStreamResult, 0, len(resolved))
 	for _, result := range resolved {
 		if strings.TrimSpace(result.URL) == "" {
@@ -118,6 +138,28 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 	}
 
 	return readyResults
+}
+
+func classifyDebridError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "not ready"):
+		return "not_ready"
+	case strings.Contains(message, "unexpected status"):
+		return "http_error"
+	case strings.Contains(message, "upload"):
+		return "upload_error"
+	case strings.Contains(message, "unlock"):
+		return "unlock_error"
+	case strings.Contains(message, "no files"):
+		return "no_files"
+	default:
+		return "other"
+	}
 }
 
 func parseStreamPath(path string) (contentType, id string, ok bool) {

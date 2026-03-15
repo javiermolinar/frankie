@@ -69,10 +69,13 @@ type SeriesRequest struct {
 }
 
 const (
-	cinemetaBase             = "https://v3-cinemeta.strem.io/meta"
-	debridResolveConcurrency = 4
-	defaultPort              = "3593"
-	defaultConfigPath        = "config.json"
+	cinemetaBase                = "https://v3-cinemeta.strem.io/meta"
+	debridResolveConcurrency    = 6
+	prowlarrSearchLimit         = 100
+	debridResolveCandidateLimit = 50
+	streamResponseLimit         = 15
+	defaultPort                 = "3593"
+	defaultConfigPath           = "config.json"
 )
 
 var manifest = Manifest{
