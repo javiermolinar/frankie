@@ -272,6 +272,26 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       font-size: 0.83rem;
     }
 
+    .form-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .secondary-button {
+      background: color-mix(in oklab, var(--card), white 8%);
+      border: 1px solid color-mix(in oklab, var(--border), white 12%);
+    }
+
+    .test-results {
+      margin-top: 12px;
+      margin-bottom: 4px;
+    }
+
+    .test-results .notice {
+      margin-bottom: 8px;
+    }
+
     .path {
       margin-top: 14px;
       color: var(--muted);
@@ -310,8 +330,19 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       </div>
       <p class="hint">Leave API key fields empty to keep existing values.</p>
 
-      <button type="submit">Save configuration</button>
+      <div class="form-actions">
+        <button type="submit" name="action" value="save">Save configuration</button>
+        <button class="secondary-button" type="submit" name="action" value="test">Test connections</button>
+      </div>
     </form>
+
+    {{if .ConnectionTests}}
+    <section class="test-results">
+      <p class="subtitle">Connection test results</p>
+      <p class="notice {{if .ConnectionTests.Prowlarr.OK}}success{{else}}error{{end}}">Prowlarr: {{.ConnectionTests.Prowlarr.Message}}</p>
+      <p class="notice {{if .ConnectionTests.Alldebrid.OK}}success{{else}}error{{end}}">AllDebrid: {{.ConnectionTests.Alldebrid.Message}}</p>
+    </section>
+    {{end}}
 
     <section class="install">
       <label for="manifest_url">Manifest URL</label>
@@ -372,11 +403,22 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type configureConnectionResult struct {
+	OK      bool
+	Message string
+}
+
+type configureConnectionTests struct {
+	Prowlarr  configureConnectionResult
+	Alldebrid configureConnectionResult
+}
+
 type configurePageData struct {
 	ProwlarrURL       string
 	ConfigPath        string
 	ManifestURL       string
 	StremioInstallURL template.URL
+	ConnectionTests   *configureConnectionTests
 	Saved             bool
 	Error             string
 }
@@ -384,7 +426,7 @@ type configurePageData struct {
 func configureHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		renderConfigurePage(w, r, "")
+		renderConfigurePage(w, r, getConfig(), "", nil)
 		return
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
@@ -392,30 +434,18 @@ func configureHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		prowlarrURL := strings.TrimRight(strings.TrimSpace(r.FormValue("prowlarr_url")), "/")
-		if prowlarrURL != "" {
-			parsedURL, err := url.Parse(prowlarrURL)
-			if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-				w.WriteHeader(http.StatusBadRequest)
-				renderConfigurePage(w, r, "Invalid Prowlarr endpoint URL")
-				return
-			}
+		updated, err := configFromConfigureForm(getConfig(), r)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			renderConfigurePage(w, r, getConfig(), err.Error(), nil)
+			return
 		}
 
-		clearProwlarrAPIKey := strings.TrimSpace(r.FormValue("clear_prowlarr_api_key")) != ""
-		clearAlldebridAPIKey := strings.TrimSpace(r.FormValue("clear_alldebrid_api_key")) != ""
-
-		updated := getConfig()
-		updated.ProwlarrURL = prowlarrURL
-		if clearProwlarrAPIKey {
-			updated.ProwlarrAPIKey = ""
-		} else if prowlarrAPIKey := strings.TrimSpace(r.FormValue("prowlarr_api_key")); prowlarrAPIKey != "" {
-			updated.ProwlarrAPIKey = prowlarrAPIKey
-		}
-		if clearAlldebridAPIKey {
-			updated.AlldebridAPIKey = ""
-		} else if alldebridAPIKey := strings.TrimSpace(r.FormValue("alldebrid_api_key")); alldebridAPIKey != "" {
-			updated.AlldebridAPIKey = alldebridAPIKey
+		action := strings.TrimSpace(r.FormValue("action"))
+		if action == "test" {
+			results := runConfigureConnectionTests(updated)
+			renderConfigurePage(w, r, updated, "", &results)
+			return
 		}
 
 		if err := saveConfigFile(configFilePath(), updated); err != nil {
@@ -433,15 +463,43 @@ func configureHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func renderConfigurePage(w http.ResponseWriter, r *http.Request, errorMessage string) {
-	cfg := getConfig()
+func configFromConfigureForm(base Config, r *http.Request) (Config, error) {
+	prowlarrURL := strings.TrimRight(strings.TrimSpace(r.FormValue("prowlarr_url")), "/")
+	if prowlarrURL != "" {
+		parsedURL, err := url.Parse(prowlarrURL)
+		if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			return Config{}, fmt.Errorf("invalid Prowlarr endpoint URL")
+		}
+	}
+
+	clearProwlarrAPIKey := strings.TrimSpace(r.FormValue("clear_prowlarr_api_key")) != ""
+	clearAlldebridAPIKey := strings.TrimSpace(r.FormValue("clear_alldebrid_api_key")) != ""
+
+	updated := base
+	updated.ProwlarrURL = prowlarrURL
+	if clearProwlarrAPIKey {
+		updated.ProwlarrAPIKey = ""
+	} else if prowlarrAPIKey := strings.TrimSpace(r.FormValue("prowlarr_api_key")); prowlarrAPIKey != "" {
+		updated.ProwlarrAPIKey = prowlarrAPIKey
+	}
+	if clearAlldebridAPIKey {
+		updated.AlldebridAPIKey = ""
+	} else if alldebridAPIKey := strings.TrimSpace(r.FormValue("alldebrid_api_key")); alldebridAPIKey != "" {
+		updated.AlldebridAPIKey = alldebridAPIKey
+	}
+
+	return normalizeConfig(updated), nil
+}
+
+func renderConfigurePage(w http.ResponseWriter, r *http.Request, cfg Config, errorMessage string, tests *configureConnectionTests) {
 	manifestURL := requestBaseURL(r) + "/manifest.json"
 	data := configurePageData{
 		ProwlarrURL:       cfg.ProwlarrURL,
 		ConfigPath:        configFilePath(),
 		ManifestURL:       manifestURL,
 		StremioInstallURL: template.URL(stremioInstallURL(manifestURL)),
-		Saved:             r.URL.Query().Get("saved") == "1",
+		ConnectionTests:   tests,
+		Saved:             tests == nil && r.URL.Query().Get("saved") == "1",
 		Error:             strings.TrimSpace(errorMessage),
 	}
 
@@ -493,6 +551,110 @@ func stremioInstallURL(manifestURL string) string {
 	trimmed = strings.TrimPrefix(trimmed, "https://")
 	trimmed = strings.TrimPrefix(trimmed, "http://")
 	return "stremio://" + trimmed
+}
+
+func runConfigureConnectionTests(cfg Config) configureConnectionTests {
+	return configureConnectionTests{
+		Prowlarr:  testProwlarrConnection(cfg),
+		Alldebrid: testAllDebridConnection(cfg),
+	}
+}
+
+func testProwlarrConnection(cfg Config) configureConnectionResult {
+	if strings.TrimSpace(cfg.ProwlarrURL) == "" {
+		return configureConnectionResult{Message: "Not configured: missing Prowlarr URL"}
+	}
+	if strings.TrimSpace(cfg.ProwlarrAPIKey) == "" {
+		return configureConnectionResult{Message: "Not configured: missing Prowlarr API key"}
+	}
+
+	baseURL, err := url.Parse(cfg.ProwlarrURL)
+	if err != nil {
+		return configureConnectionResult{Message: "Invalid Prowlarr URL"}
+	}
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/api/v1/system/status"
+
+	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
+	if err != nil {
+		return configureConnectionResult{Message: "Failed to build Prowlarr request"}
+	}
+	req.Header.Set("X-Api-Key", cfg.ProwlarrAPIKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return configureConnectionResult{Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return configureConnectionResult{Message: "Failed to read Prowlarr response"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return configureConnectionResult{Message: fmt.Sprintf("Prowlarr returned HTTP %d", resp.StatusCode)}
+	}
+
+	var payload struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return configureConnectionResult{OK: true, Message: "Connected (non-standard response payload)"}
+	}
+
+	msg := "Connected"
+	if strings.TrimSpace(payload.Version) != "" {
+		msg += " (version " + strings.TrimSpace(payload.Version) + ")"
+	}
+	return configureConnectionResult{OK: true, Message: msg}
+}
+
+func testAllDebridConnection(cfg Config) configureConnectionResult {
+	if strings.TrimSpace(cfg.AlldebridAPIKey) == "" {
+		return configureConnectionResult{Message: "Not configured: missing AllDebrid API key"}
+	}
+
+	req, err := http.NewRequest(http.MethodGet, allDebridBaseURL+"/v4/user", nil)
+	if err != nil {
+		return configureConnectionResult{Message: "Failed to build AllDebrid request"}
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.AlldebridAPIKey))
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return configureConnectionResult{Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return configureConnectionResult{Message: "Failed to read AllDebrid response"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return configureConnectionResult{Message: fmt.Sprintf("AllDebrid returned HTTP %d", resp.StatusCode)}
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		Data   struct {
+			User struct {
+				Username string `json:"username"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return configureConnectionResult{Message: "Invalid AllDebrid response payload"}
+	}
+	if !strings.EqualFold(payload.Status, "success") {
+		return configureConnectionResult{Message: "AllDebrid authentication failed"}
+	}
+
+	msg := "Connected"
+	if strings.TrimSpace(payload.Data.User.Username) != "" {
+		msg += " as " + strings.TrimSpace(payload.Data.User.Username)
+	}
+	return configureConnectionResult{OK: true, Message: msg}
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {

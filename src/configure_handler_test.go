@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,5 +98,82 @@ func TestConfigureHandlerPreservesAndClearsAPIKeys(t *testing.T) {
 	}
 	if cleared.AlldebridAPIKey != "" {
 		t.Fatalf("expected alldebrid key to be cleared, got %q", cleared.AlldebridAPIKey)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestConfigureHandlerTestActionRunsConnectionChecks(t *testing.T) {
+	originalConfig := getConfig()
+	defer setConfig(originalConfig)
+
+	originalHTTPClient := httpClient
+	defer func() { httpClient = originalHTTPClient }()
+
+	httpClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.Contains(req.URL.Host, "prowlarr.local") && req.URL.Path == "/api/v1/system/status":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"version":"1.2.3"}`)),
+				Header:     make(http.Header),
+			}, nil
+		case req.URL.Host == "api.alldebrid.com" && req.URL.Path == "/v4/user":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"status":"success","data":{"user":{"username":"tester"}}}`)),
+				Header:     make(http.Header),
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Header:     make(http.Header),
+			}, nil
+		}
+	})}
+
+	setConfig(Config{
+		Port:            defaultPort,
+		ProwlarrURL:     "http://saved.example:9696",
+		ProwlarrAPIKey:  "saved-prowlarr",
+		AlldebridAPIKey: "saved-alldebrid",
+	})
+
+	form := url.Values{}
+	form.Set("action", "test")
+	form.Set("prowlarr_url", "http://prowlarr.local:9696")
+	form.Set("prowlarr_api_key", "new-prowlarr")
+	form.Set("alldebrid_api_key", "new-alldebrid")
+
+	req := httptest.NewRequest(http.MethodPost, "/configure", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	configureHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d for test action, got %d", http.StatusOK, rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Connection test results") {
+		t.Fatalf("expected connection test results in response body")
+	}
+	if !strings.Contains(body, "Prowlarr: Connected") {
+		t.Fatalf("expected prowlarr success in response body")
+	}
+	if !strings.Contains(body, "AllDebrid: Connected") {
+		t.Fatalf("expected alldebrid success in response body")
+	}
+
+	// Test action should not persist config.
+	after := getConfig()
+	if after.ProwlarrURL != "http://saved.example:9696" || after.ProwlarrAPIKey != "saved-prowlarr" || after.AlldebridAPIKey != "saved-alldebrid" {
+		t.Fatalf("expected config to remain unchanged after test action, got %+v", after)
 	}
 }
