@@ -111,6 +111,20 @@ func TestConfigureHandlerTestActionRunsConnectionChecks(t *testing.T) {
 	originalConfig := getConfig()
 	defer setConfig(originalConfig)
 
+	originalConfigFile, hadConfigFile := os.LookupEnv("CONFIG_FILE")
+	defer func() {
+		if hadConfigFile {
+			_ = os.Setenv("CONFIG_FILE", originalConfigFile)
+		} else {
+			_ = os.Unsetenv("CONFIG_FILE")
+		}
+	}()
+
+	tmpConfigPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Setenv("CONFIG_FILE", tmpConfigPath); err != nil {
+		t.Fatalf("set CONFIG_FILE: %v", err)
+	}
+
 	originalHTTPClient := httpClient
 	defer func() { httpClient = originalHTTPClient }()
 
@@ -171,9 +185,9 @@ func TestConfigureHandlerTestActionRunsConnectionChecks(t *testing.T) {
 		t.Fatalf("expected alldebrid success in response body")
 	}
 
-	// Test action should not persist config.
+	// Test action should persist configuration so refresh keeps keys.
 	after := getConfig()
-	if after.ProwlarrURL != "http://saved.example:9696" || after.ProwlarrAPIKey != "saved-prowlarr" || after.AlldebridAPIKey != "saved-alldebrid" {
-		t.Fatalf("expected config to remain unchanged after test action, got %+v", after)
+	if after.ProwlarrURL != "http://prowlarr.local:9696" || after.ProwlarrAPIKey != "new-prowlarr" || after.AlldebridAPIKey != "new-alldebrid" {
+		t.Fatalf("expected config to be updated after test action, got %+v", after)
 	}
 }

@@ -319,12 +319,14 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
 
       <label for="prowlarr_api_key">Prowlarr API key</label>
       <input id="prowlarr_api_key" name="prowlarr_api_key" type="password" value="" autocomplete="new-password" placeholder="Enter new key (optional)" />
+      <p class="hint">Saved key: {{if .HasProwlarrAPIKey}}yes{{else}}no{{end}}</p>
       <div class="checkbox-row">
         <label class="checkbox"><input type="checkbox" name="clear_prowlarr_api_key" value="1" /> Clear saved Prowlarr API key</label>
       </div>
 
       <label for="alldebrid_api_key">AllDebrid API key</label>
       <input id="alldebrid_api_key" name="alldebrid_api_key" type="password" value="" autocomplete="new-password" placeholder="Enter new key (optional)" />
+      <p class="hint">Saved key: {{if .HasAlldebridAPIKey}}yes{{else}}no{{end}}</p>
       <div class="checkbox-row">
         <label class="checkbox"><input type="checkbox" name="clear_alldebrid_api_key" value="1" /> Clear saved AllDebrid API key</label>
       </div>
@@ -414,13 +416,15 @@ type configureConnectionTests struct {
 }
 
 type configurePageData struct {
-	ProwlarrURL       string
-	ConfigPath        string
-	ManifestURL       string
-	StremioInstallURL template.URL
-	ConnectionTests   *configureConnectionTests
-	Saved             bool
-	Error             string
+	ProwlarrURL        string
+	ConfigPath         string
+	ManifestURL        string
+	StremioInstallURL  template.URL
+	HasProwlarrAPIKey  bool
+	HasAlldebridAPIKey bool
+	ConnectionTests    *configureConnectionTests
+	Saved              bool
+	Error              string
 }
 
 func configureHandler(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +447,13 @@ func configureHandler(w http.ResponseWriter, r *http.Request) {
 
 		action := strings.TrimSpace(r.FormValue("action"))
 		if action == "test" {
+			if err := saveConfigFile(configFilePath(), updated); err != nil {
+				log.Printf("save config: %v", err)
+				http.Error(w, "failed to save config", http.StatusInternalServerError)
+				return
+			}
+			setConfig(updated)
+
 			results := runConfigureConnectionTests(updated)
 			renderConfigurePage(w, r, updated, "", &results)
 			return
@@ -494,13 +505,15 @@ func configFromConfigureForm(base Config, r *http.Request) (Config, error) {
 func renderConfigurePage(w http.ResponseWriter, r *http.Request, cfg Config, errorMessage string, tests *configureConnectionTests) {
 	manifestURL := requestBaseURL(r) + "/manifest.json"
 	data := configurePageData{
-		ProwlarrURL:       cfg.ProwlarrURL,
-		ConfigPath:        configFilePath(),
-		ManifestURL:       manifestURL,
-		StremioInstallURL: template.URL(stremioInstallURL(manifestURL)),
-		ConnectionTests:   tests,
-		Saved:             tests == nil && r.URL.Query().Get("saved") == "1",
-		Error:             strings.TrimSpace(errorMessage),
+		ProwlarrURL:        cfg.ProwlarrURL,
+		ConfigPath:         configFilePath(),
+		ManifestURL:        manifestURL,
+		StremioInstallURL:  template.URL(stremioInstallURL(manifestURL)),
+		HasProwlarrAPIKey:  strings.TrimSpace(cfg.ProwlarrAPIKey) != "",
+		HasAlldebridAPIKey: strings.TrimSpace(cfg.AlldebridAPIKey) != "",
+		ConnectionTests:    tests,
+		Saved:              tests == nil && r.URL.Query().Get("saved") == "1",
+		Error:              strings.TrimSpace(errorMessage),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
