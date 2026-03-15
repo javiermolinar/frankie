@@ -6,6 +6,14 @@
 
 Frankie is a self-hosted Stremio add-on server powered by **Prowlarr** + **AllDebrid**.
 
+## Disclaimer
+
+This project is provided for **educational and research purposes only**.
+
+By using this software, you are solely responsible for how you use it and for complying with all applicable laws and terms of service in your country.
+
+The author and contributors do **not** endorse or accept responsibility for any illegal, abusive, or unauthorized use.
+
 ---
 
 ## Requirements
