@@ -74,19 +74,6 @@ Or manually:
 
 ---
 
-## Where config is saved
-
-- In container: `/config/config.json`
-- In Compose default setup: inside Docker volume `frankie_config`
-
-Inspect saved config:
-
-```bash
-docker compose exec frankie sh -lc 'ls -la /config && cat /config/config.json'
-```
-
----
-
 ## Environment variables
 
 - `PORT` (default `3593`)
@@ -104,5 +91,6 @@ Startup precedence:
 
 ## Notes
 
+- You need to add your indexers in prowlarr to have this working https://wiki.servarr.com/prowlarr/indexers
 - API key values are never rendered back in plain text in the UI.
 - Save events are logged with key presence flags (not raw keys).
