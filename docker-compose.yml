@@ -7,12 +7,13 @@ services:
       - "3593:3593"
     environment:
       PORT: "3593"
-      # Frankie can reach Prowlarr via the internal Docker DNS name.
+      CONFIG_FILE: "/config/config.json"
+      # Frankie can reach Prowlarr using the service name below.
       PROWLARR_URL: "http://prowlarr:9696"
-      # Optional external URL used for manifest/assets links.
-      # PUBLIC_URL: "http://localhost:3593"
+      # Optional if exposed behind a reverse proxy / domain:
+      # PUBLIC_URL: "https://your-domain.example"
     volumes:
-      - ./config/frankie:/config
+      - frankie_config:/config
     depends_on:
       - prowlarr
 
@@ -27,4 +28,8 @@ services:
       PGID: "1000"
       TZ: "Etc/UTC"
     volumes:
-      - ./config/prowlarr:/config
+      - prowlarr_config:/config
+
+volumes:
+  frankie_config:
+  prowlarr_config:

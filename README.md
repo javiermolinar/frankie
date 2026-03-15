@@ -4,77 +4,61 @@
   <img src="assets/logo.png" alt="Frankie logo" width="120" />
 </p>
 
-Frankie is a self-hosted Stremio add-on server baked by prowlarr and alldebrid.
-
-This project is intended strictly for educational and research purposes. It was created to demonstrate concepts and techniques related to the technology used in this repository.
-The author does not encourage, support, or condone any illegal, unethical, or malicious use of this software.
+Frankie is a self-hosted Stremio add-on server powered by **Prowlarr** + **AllDebrid**.
 
 ---
 
 ## Requirements
 
-- A running **Prowlarr** instance
-- A valid **AllDebrid API key**
-- Stremio desktop app (recommended for `stremio://` install button)
+- Prowlarr instance
+- AllDebrid API key
+- Stremio app (desktop recommended for `stremio://` install button)
 
 ---
 
-## Installation
+## Quick start (Docker Compose)
 
-### Option 1: Docker Compose (recommended)
- 
-Use the included `docker-compose.yml`:
+Use the included compose file:
 
 ```bash
 docker compose up -d
 ```
 
-This starts:
-- `frankie` on `http://localhost:3593`
-- `prowlarr` on `http://localhost:9696`
+Services:
+- Frankie: `http://localhost:3593`
+- Prowlarr: `http://localhost:9696`
 
-### Option 2: Docker image directly
-
-```bash
-docker run -d \
-  --name frankie \
-  -p 3593:3593 \
-  -v $(pwd)/config:/config \
-  javimolinar/frankie:latest
-```
-
-Then open `http://localhost:3593/configure`.
-
-### Option 3: Run from source
-
-```bash
-go test ./...
-go run ./src
-```
-
-Server default: `http://localhost:3593`
+> Compose uses **named volumes** (`frankie_config`, `prowlarr_config`) to avoid host-folder permission issues.
 
 ---
 
-## Configuration
+## Configuration process (`/configure`)
 
 Open:
 
 - `http://localhost:3593/configure`
 
-Fill in:
-- **Prowlarr endpoint** (example: `http://prowlarr:9696` in Docker Compose)
-- **Prowlarr API key**
-- **AllDebrid API key**
+Then:
 
-Click **Save configuration**.
+1. Fill **Prowlarr endpoint** (with compose default, use `http://prowlarr:9696`)
+2. Enter **Prowlarr API key**
+3. Enter **AllDebrid API key**
+4. Click one of:
+   - **Save configuration** (save and redirect)
+   - **Test connections** (save + test Prowlarr and AllDebrid immediately)
 
-### Where config is saved
+### What you should see
 
-- In Docker image: `/config/config.json`
-- Local default: `./config.json`
-- Override path with env var:
-  - `CONFIG_FILE=/path/to/config.json`
+- `Saved key: ********` means a key is stored
+- `Saved key: no` means no key stored
+- You can remove saved keys with:
+  - `Clear saved Prowlarr API key`
+  - `Clear saved AllDebrid API key`
+
+### Connection tests
+
+- Prowlarr check: `GET /api/v1/system/status` on your configured Prowlarr URL
+- AllDebrid check: `GET https://api.alldebrid.com/v4/user`
 
 ---
 
@@ -83,34 +67,42 @@ Click **Save configuration**.
 From `/configure`:
 - Click **Install in Stremio**
 
-Or manually in Stremio:
-1. Open Add-ons
-2. Install from URL
-3. Paste:
+Or manually:
+1. Stremio → Add-ons → Install from URL
+2. Paste:
    - `http://<your-host>:3593/manifest.json`
 
-> If Stremio runs on another device, use a host/IP reachable from that device.
+---
+
+## Where config is saved
+
+- In container: `/config/config.json`
+- In Compose default setup: inside Docker volume `frankie_config`
+
+Inspect saved config:
+
+```bash
+docker compose exec frankie sh -lc 'ls -la /config && cat /config/config.json'
+```
 
 ---
 
 ## Environment variables
 
-- `PORT` (default: `3593`)
-- `CONFIG_FILE` (default: `config.json`, Docker sets `/config/config.json`)
-- `PUBLIC_URL` (optional; used for manifest logo/background URLs)
-- `PROWLARR_URL` (optional, can be saved in config file)
-- `PROWLARR_API_KEY` (optional, can be saved in config file)
-- `ALLDEBRID_API_KEY` (optional, can be saved in config file)
+- `PORT` (default `3593`)
+- `CONFIG_FILE` (default `config.json`; docker compose sets `/config/config.json`)
+- `PUBLIC_URL` (optional; for manifest asset URLs)
+- `PROWLARR_URL` (optional)
+- `PROWLARR_API_KEY` (optional)
+- `ALLDEBRID_API_KEY` (optional)
 
-### Precedence
-
-At startup:
-1. Config file is loaded
-2. Environment variables override file values
+Startup precedence:
+1. load config file
+2. override with env vars
 
 ---
 
 ## Notes
 
-- Keep your API keys private.
-
+- API key values are never rendered back in plain text in the UI.
+- Save events are logged with key presence flags (not raw keys).
