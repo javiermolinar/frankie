@@ -237,6 +237,7 @@ type DebridStreamResult struct {
 	Filename string
 	Size     int64
 	Host     string
+	Language string
 }
 
 // FileError represents the error details if a file is invalid.
@@ -246,6 +247,10 @@ type FileError struct {
 }
 
 func getStreamLink(magnet string) (DebridStreamResult, error) {
+	if !alldebridConfigured() {
+		return DebridStreamResult{}, fmt.Errorf("alldebrid is not configured")
+	}
+
 	uploadResp, err := uploadMagnet(magnet)
 	if err != nil {
 		return DebridStreamResult{}, err
@@ -334,6 +339,7 @@ func pickPrimaryFile(files []MagnetFile) (MagnetFile, bool) {
 }
 
 func magnetStatus(id int, statusFilter string) (MagnetStatusResponse, error) {
+	cfg := getConfig()
 	baseURL, _ := url.Parse(allDebridBaseURL)
 	baseURL.Path = magnetStatusPath
 
@@ -352,7 +358,7 @@ func magnetStatus(id int, statusFilter string) (MagnetStatusResponse, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", config.AlldebridAPIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.AlldebridAPIKey))
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -381,6 +387,7 @@ func magnetStatus(id int, statusFilter string) (MagnetStatusResponse, error) {
 }
 
 func unlockLink(link string) (UnlockLinkRespose, error) {
+	cfg := getConfig()
 	baseURL, _ := url.Parse(allDebridBaseURL)
 	baseURL.Path = unlockLinkPath
 	form := url.Values{}
@@ -394,7 +401,7 @@ func unlockLink(link string) (UnlockLinkRespose, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", config.AlldebridAPIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.AlldebridAPIKey))
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return UnlockLinkRespose{}, err
@@ -419,6 +426,7 @@ func unlockLink(link string) (UnlockLinkRespose, error) {
 }
 
 func uploadMagnet(magnet string) (UploadMagnetResponse, error) {
+	cfg := getConfig()
 	baseURL, _ := url.Parse(allDebridBaseURL)
 	baseURL.Path = magnetUploadPath
 	form := url.Values{}
@@ -432,7 +440,7 @@ func uploadMagnet(magnet string) (UploadMagnetResponse, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", config.AlldebridAPIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.AlldebridAPIKey))
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return UploadMagnetResponse{}, err
@@ -454,4 +462,9 @@ func uploadMagnet(magnet string) (UploadMagnetResponse, error) {
 	}
 
 	return result, nil
+}
+
+func alldebridConfigured() bool {
+	cfg := getConfig()
+	return strings.TrimSpace(cfg.AlldebridAPIKey) != ""
 }

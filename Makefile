@@ -4,13 +4,13 @@ PORT ?= 3593
 .PHONY: run build fmt test clean
 
 run:
-	PORT=$(PORT) go run .
+	PORT=$(PORT) go run ./src
 
 build:
-	go build -o $(APP) .
+	go build -o $(APP) ./src
 
 fmt:
-	gofmt -w main.go
+	gofmt -w ./src/*.go
 
 test:
 	go test ./...

@@ -1,0 +1,30 @@
+services:
+  frankie:
+    image: javimolinar/frankie:latest
+    container_name: frankie
+    restart: unless-stopped
+    ports:
+      - "3593:3593"
+    environment:
+      PORT: "3593"
+      # Frankie can reach Prowlarr via the internal Docker DNS name.
+      PROWLARR_URL: "http://prowlarr:9696"
+      # Optional external URL used for manifest/assets links.
+      # PUBLIC_URL: "http://localhost:3593"
+    volumes:
+      - ./config/frankie:/config
+    depends_on:
+      - prowlarr
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    ports:
+      - "9696:9696"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Etc/UTC"
+    volumes:
+      - ./config/prowlarr:/config
