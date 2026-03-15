@@ -1,7 +1,7 @@
 # Frankie
 
 <p align="center">
-  <img src="assets/logo.png" alt="Frankie logo" width="120" />
+  <img src="assets/logo.png" alt="Frankie logo" />
 </p>
 
 Frankie is a self-hosted Stremio add-on server powered by **Prowlarr** + **AllDebrid**.
@@ -68,9 +68,7 @@ Then:
 - Prowlarr check: `GET /api/v1/system/status` on your configured Prowlarr URL
 - AllDebrid check: `GET https://api.alldebrid.com/v4/user`
 
----
-
-## Install in Stremio
+### Install in Stremio
 
 From `/configure`:
 - Click **Install in Stremio**
@@ -100,5 +98,3 @@ Startup precedence:
 ## Notes
 
 - You need to add your indexers in prowlarr to have this working https://wiki.servarr.com/prowlarr/indexers
-- API key values are never rendered back in plain text in the UI.
-- Save events are logged with key presence flags (not raw keys).
