@@ -363,7 +363,12 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 			continue
 		}
 
+		quality := extractResolutionFromText(result.Filename)
 		name := "⚡Frankie"
+		if quality != "" {
+			name += "\n" + quality
+		}
+
 		descriptionParts := []string{}
 		if result.Filename != "" {
 			descriptionParts = append(descriptionParts, result.Filename)
@@ -380,7 +385,7 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 
 		streams = append(streams, Stream{
 			Name:        name,
-			Description: strings.Join(descriptionParts, " · "),
+			Description: strings.Join(descriptionParts, "\n"),
 			URL:         result.URL,
 			BehaviorHints: &BehaviorHints{
 				NotWebReady: true,
@@ -442,6 +447,19 @@ func extractLanguageFromTitle(title string) string {
 		return "Dual Audio"
 	}
 
+	return ""
+}
+
+func extractResolutionFromText(value string) string {
+	tokens := tokenizeReleaseText(value)
+	for _, token := range tokens {
+		switch token {
+		case "4320P", "2160P", "1440P", "1080P", "720P", "576P", "480P":
+			return strings.ToLower(token)
+		case "4K", "UHD":
+			return "2160p"
+		}
+	}
 	return ""
 }
 

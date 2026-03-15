@@ -37,3 +37,26 @@ func TestExtractLanguageFromTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStreamsIncludesQualityInName(t *testing.T) {
+	results := []DebridStreamResult{{
+		URL:      "https://video.example/stream",
+		Filename: "Movie.2024.1080p.WEB-DL.mkv",
+		Size:     1024,
+		Language: "English",
+		Host:     "alldebrid",
+	}}
+
+	streams := buildStreams("movie", results)
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(streams))
+	}
+	if streams[0].Name != "⚡Frankie\n1080p" {
+		t.Fatalf("unexpected stream name: %q", streams[0].Name)
+	}
+
+	expectedDescription := "Movie.2024.1080p.WEB-DL.mkv\n💾 1.0 KiB\n🗣️ English\n🌐 alldebrid"
+	if streams[0].Description != expectedDescription {
+		t.Fatalf("unexpected stream description: %q", streams[0].Description)
+	}
+}
