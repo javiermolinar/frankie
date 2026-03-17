@@ -13,11 +13,13 @@ import (
 )
 
 type Config struct {
-	Port            string `json:"port,omitempty"`
-	ProwlarrURL     string `json:"prowlarr_url,omitempty"`
-	ProwlarrAPIKey  string `json:"prowlarr_api_key,omitempty"`
-	AlldebridAPIKey string `json:"alldebrid_api_key,omitempty"`
-	PublicURL       string `json:"public_url,omitempty"`
+	Port              string `json:"port,omitempty"`
+	ProwlarrURL       string `json:"prowlarr_url,omitempty"`
+	ProwlarrAPIKey    string `json:"prowlarr_api_key,omitempty"`
+	AlldebridAPIKey   string `json:"alldebrid_api_key,omitempty"`
+	PrimaryLanguage   string `json:"primary_language,omitempty"`
+	SecondaryLanguage string `json:"secondary_language,omitempty"`
+	PublicURL         string `json:"public_url,omitempty"`
 }
 
 type Manifest struct {
@@ -168,11 +170,13 @@ func loadConfig() Config {
 	}
 
 	cfg = mergeConfig(cfg, Config{
-		Port:            os.Getenv("PORT"),
-		ProwlarrURL:     os.Getenv("PROWLARR_URL"),
-		ProwlarrAPIKey:  os.Getenv("PROWLARR_API_KEY"),
-		AlldebridAPIKey: os.Getenv("ALLDEBRID_API_KEY"),
-		PublicURL:       os.Getenv("PUBLIC_URL"),
+		Port:              os.Getenv("PORT"),
+		ProwlarrURL:       os.Getenv("PROWLARR_URL"),
+		ProwlarrAPIKey:    os.Getenv("PROWLARR_API_KEY"),
+		AlldebridAPIKey:   os.Getenv("ALLDEBRID_API_KEY"),
+		PrimaryLanguage:   os.Getenv("PRIMARY_LANGUAGE"),
+		SecondaryLanguage: os.Getenv("SECONDARY_LANGUAGE"),
+		PublicURL:         os.Getenv("PUBLIC_URL"),
 	})
 
 	cfg = normalizeConfig(cfg)
@@ -195,6 +199,14 @@ func normalizeConfig(cfg Config) Config {
 	cfg.ProwlarrURL = strings.TrimRight(strings.TrimSpace(cfg.ProwlarrURL), "/")
 	cfg.ProwlarrAPIKey = strings.TrimSpace(cfg.ProwlarrAPIKey)
 	cfg.AlldebridAPIKey = strings.TrimSpace(cfg.AlldebridAPIKey)
+	cfg.PrimaryLanguage = canonicalLanguageLabel(cfg.PrimaryLanguage)
+	cfg.SecondaryLanguage = canonicalLanguageLabel(cfg.SecondaryLanguage)
+	if cfg.PrimaryLanguage == "" {
+		cfg.SecondaryLanguage = ""
+	}
+	if cfg.PrimaryLanguage != "" && strings.EqualFold(cfg.PrimaryLanguage, cfg.SecondaryLanguage) {
+		cfg.SecondaryLanguage = ""
+	}
 	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/")
 	return cfg
 }
@@ -211,6 +223,12 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if strings.TrimSpace(override.AlldebridAPIKey) != "" {
 		base.AlldebridAPIKey = override.AlldebridAPIKey
+	}
+	if strings.TrimSpace(override.PrimaryLanguage) != "" {
+		base.PrimaryLanguage = override.PrimaryLanguage
+	}
+	if strings.TrimSpace(override.SecondaryLanguage) != "" {
+		base.SecondaryLanguage = override.SecondaryLanguage
 	}
 	if strings.TrimSpace(override.PublicURL) != "" {
 		base.PublicURL = override.PublicURL

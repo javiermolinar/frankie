@@ -73,6 +73,47 @@ var languageMatchers = []struct {
 	{Label: "Turkish", Tokens: []string{"TURKISH", "TUR"}},
 }
 
+func languageOptions() []string {
+	options := make([]string, 0, len(languageMatchers))
+	for _, matcher := range languageMatchers {
+		options = append(options, matcher.Label)
+	}
+	return options
+}
+
+func canonicalLanguageLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "english":
+		return "English"
+	case "spanish":
+		return "Spanish"
+	case "french":
+		return "French"
+	case "italian":
+		return "Italian"
+	case "german":
+		return "German"
+	case "portuguese":
+		return "Portuguese"
+	case "hindi":
+		return "Hindi"
+	case "japanese":
+		return "Japanese"
+	case "korean":
+		return "Korean"
+	case "chinese":
+		return "Chinese"
+	case "russian":
+		return "Russian"
+	case "arabic":
+		return "Arabic"
+	case "turkish":
+		return "Turkish"
+	default:
+		return ""
+	}
+}
+
 func parseSeriesRequest(id string) (SeriesRequest, bool) {
 	parts := strings.Split(id, ":")
 	if len(parts) != 3 {
@@ -478,12 +519,20 @@ func prowlarrQualityScore(result ProwlarrSearchResult) int {
 
 func sortProwlarrResults(results []ProwlarrSearchResult) []ProwlarrSearchResult {
 	sorted := append([]ProwlarrSearchResult(nil), results...)
+	cfg := getConfig()
 	sort.SliceStable(sorted, func(i, j int) bool {
 		leftQuality := prowlarrQualityScore(sorted[i])
 		rightQuality := prowlarrQualityScore(sorted[j])
 		if leftQuality != rightQuality {
 			return leftQuality > rightQuality
 		}
+
+		leftLanguage := prowlarrLanguagePreferenceScore(sorted[i], cfg)
+		rightLanguage := prowlarrLanguagePreferenceScore(sorted[j], cfg)
+		if leftLanguage != rightLanguage {
+			return leftLanguage > rightLanguage
+		}
+
 		if sorted[i].Size != sorted[j].Size {
 			return sorted[i].Size > sorted[j].Size
 		}
@@ -495,17 +544,22 @@ func sortProwlarrResults(results []ProwlarrSearchResult) []ProwlarrSearchResult 
 	return sorted
 }
 
-func extractLanguageFromTitle(title string) string {
-	tokens := tokenizeReleaseText(title)
+func releaseTokenSet(value string) map[string]struct{} {
+	tokens := tokenizeReleaseText(value)
 	if len(tokens) == 0 {
-		return ""
+		return nil
 	}
-
-	tokenSet := make(map[string]struct{}, len(tokens))
+	set := make(map[string]struct{}, len(tokens))
 	for _, token := range tokens {
-		tokenSet[token] = struct{}{}
+		set[token] = struct{}{}
 	}
+	return set
+}
 
+func detectedLanguagesFromTokenSet(tokenSet map[string]struct{}) []string {
+	if len(tokenSet) == 0 {
+		return nil
+	}
 	languages := make([]string, 0, 3)
 	for _, matcher := range languageMatchers {
 		for _, token := range matcher.Tokens {
@@ -515,7 +569,51 @@ func extractLanguageFromTitle(title string) string {
 			}
 		}
 	}
+	return languages
+}
 
+func prowlarrLanguagePreferenceScore(result ProwlarrSearchResult, cfg Config) int {
+	primary := canonicalLanguageLabel(cfg.PrimaryLanguage)
+	secondary := canonicalLanguageLabel(cfg.SecondaryLanguage)
+	if primary == "" && secondary == "" {
+		return 0
+	}
+
+	tokenSet := releaseTokenSet(result.Title + " " + result.FileName)
+	if len(tokenSet) == 0 {
+		return 0
+	}
+
+	detected := detectedLanguagesFromTokenSet(tokenSet)
+	if len(detected) == 0 {
+		return 0
+	}
+
+	hasLanguage := func(target string) bool {
+		for _, language := range detected {
+			if language == target {
+				return true
+			}
+		}
+		return false
+	}
+
+	if primary != "" && hasLanguage(primary) {
+		return 2
+	}
+	if secondary != "" && hasLanguage(secondary) {
+		return 1
+	}
+	return 0
+}
+
+func extractLanguageFromTitle(title string) string {
+	tokenSet := releaseTokenSet(title)
+	if len(tokenSet) == 0 {
+		return ""
+	}
+
+	languages := detectedLanguagesFromTokenSet(tokenSet)
 	if len(languages) > 0 {
 		return strings.Join(languages, ", ")
 	}

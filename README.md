@@ -51,7 +51,8 @@ Then:
 1. Fill **Prowlarr endpoint** (with compose default, use `http://prowlarr:9696`)
 2. Enter **Prowlarr API key**
 3. Enter **AllDebrid API key**
-4. Click one of:
+4. (Optional) Pick your **Primary** and **Secondary** language preference
+5. Click one of:
    - **Save configuration** (save and redirect)
    - **Test connections** (save + test Prowlarr and AllDebrid immediately)
 
@@ -88,6 +89,8 @@ Or manually:
 - `PROWLARR_URL` (optional)
 - `PROWLARR_API_KEY` (optional)
 - `ALLDEBRID_API_KEY` (optional)
+- `PRIMARY_LANGUAGE` (optional; must match one of the configure page language options)
+- `SECONDARY_LANGUAGE` (optional; same, and must be different from primary)
 
 Startup precedence:
 1. load config file

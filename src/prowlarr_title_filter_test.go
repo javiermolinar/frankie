@@ -77,6 +77,26 @@ func TestSortProwlarrResultsPrefersHigherQuality(t *testing.T) {
 	}
 }
 
+func TestSortProwlarrResultsUsesLanguagePreferenceAfterQuality(t *testing.T) {
+	originalConfig := getConfig()
+	defer setConfig(originalConfig)
+	setConfig(Config{PrimaryLanguage: "Spanish", SecondaryLanguage: "English"})
+
+	results := []ProwlarrSearchResult{
+		{Title: "Movie.2024.1080p.WEB-DL.ENG", Size: 2_000},
+		{Title: "Movie.2024.1080p.WEB-DL.SPANISH", Size: 1_000},
+		{Title: "Movie.2024.2160p.WEB-DL.ENG", Size: 500},
+	}
+
+	sorted := sortProwlarrResults(results)
+	if got, want := sorted[0].Title, "Movie.2024.2160p.WEB-DL.ENG"; got != want {
+		t.Fatalf("quality should rank first: got %q want %q", got, want)
+	}
+	if got, want := sorted[1].Title, "Movie.2024.1080p.WEB-DL.SPANISH"; got != want {
+		t.Fatalf("language preference should rank second: got %q want %q", got, want)
+	}
+}
+
 func TestDedupeProwlarrResultsByInfoHash(t *testing.T) {
 	results := []ProwlarrSearchResult{
 		{Title: "A.1080p", InfoHash: "abc", Size: 100},

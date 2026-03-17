@@ -116,7 +116,8 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       accent-color: var(--accent);
     }
 
-    input {
+    input,
+    select {
       width: 100%;
       box-sizing: border-box;
       border: 1px solid var(--border);
@@ -128,7 +129,8 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       margin-bottom: 12px;
     }
 
-    input:focus {
+    input:focus,
+    select:focus {
       outline: none;
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.2);
@@ -200,6 +202,29 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       flex-wrap: wrap;
     }
 
+    .language-preferences {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0f141b;
+    }
+
+    .language-preferences-title {
+      margin: 0 0 10px;
+      font-size: 0.9rem;
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .language-preferences select {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      appearance: auto;
+      -webkit-appearance: menulist;
+    }
+
     .secondary-button {
       background: color-mix(in oklab, var(--card), white 8%);
       border: 1px solid color-mix(in oklab, var(--border), white 12%);
@@ -254,6 +279,23 @@ var configurePageTemplate = template.Must(template.New("configure").Parse(`<!doc
       </div>
       <p class="hint">Leave API key fields empty to keep existing values.</p>
 
+      <section class="language-preferences">
+        <p class="language-preferences-title">Language order</p>
+
+        <label for="primary_language">Primary language preference</label>
+        <select id="primary_language" name="primary_language">
+          <option value="">Any language</option>
+          {{range .LanguageOptions}}<option value="{{.}}" {{if eq $.PrimaryLanguage .}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+
+        <label for="secondary_language">Secondary language preference</label>
+        <select id="secondary_language" name="secondary_language">
+          <option value="">None</option>
+          {{range .LanguageOptions}}<option value="{{.}}" {{if eq $.SecondaryLanguage .}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <p class="hint">Pick up to two languages in order (first priority, then second).</p>
+      </section>
+
       <div class="form-actions">
         <button type="submit" name="action" value="save">Save configuration</button>
         <button class="secondary-button" type="submit" name="action" value="test">Test connections</button>
@@ -297,6 +339,9 @@ type configureConnectionTests struct {
 
 type configurePageData struct {
 	ProwlarrURL           string
+	PrimaryLanguage       string
+	SecondaryLanguage     string
+	LanguageOptions       []string
 	ConfigPath            string
 	ManifestURL           string
 	StremioInstallURL     template.URL
@@ -383,13 +428,59 @@ func configFromConfigureForm(base Config, r *http.Request) (Config, error) {
 		updated.AlldebridAPIKey = alldebridAPIKey
 	}
 
+	if _, ok := r.Form["primary_language"]; ok {
+		primaryLanguage, err := parseConfiguredLanguage(r.FormValue("primary_language"))
+		if err != nil {
+			return Config{}, err
+		}
+		updated.PrimaryLanguage = primaryLanguage
+	}
+
+	if _, ok := r.Form["secondary_language"]; ok {
+		secondaryLanguage, err := parseConfiguredLanguage(r.FormValue("secondary_language"))
+		if err != nil {
+			return Config{}, err
+		}
+		updated.SecondaryLanguage = secondaryLanguage
+	}
+
+	if err := validateConfiguredLanguageOrder(updated.PrimaryLanguage, updated.SecondaryLanguage); err != nil {
+		return Config{}, err
+	}
+
 	return normalizeConfig(updated), nil
+}
+
+func parseConfiguredLanguage(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	canonical := canonicalLanguageLabel(trimmed)
+	if canonical == "" {
+		return "", fmt.Errorf("invalid language selection")
+	}
+	return canonical, nil
+}
+
+func validateConfiguredLanguageOrder(primary, secondary string) error {
+	if strings.TrimSpace(primary) == "" && strings.TrimSpace(secondary) != "" {
+		return fmt.Errorf("secondary language requires a primary language")
+	}
+	if strings.TrimSpace(primary) != "" && strings.EqualFold(primary, secondary) {
+		return fmt.Errorf("primary and secondary languages must be different")
+	}
+	return nil
 }
 
 func renderConfigurePage(w http.ResponseWriter, r *http.Request, cfg Config, errorMessage string, tests *configureConnectionTests) {
 	manifestURL := requestBaseURL(r) + "/manifest.json"
 	data := configurePageData{
 		ProwlarrURL:           cfg.ProwlarrURL,
+		PrimaryLanguage:       cfg.PrimaryLanguage,
+		SecondaryLanguage:     cfg.SecondaryLanguage,
+		LanguageOptions:       languageOptions(),
 		ConfigPath:            configFilePath(),
 		ManifestURL:           manifestURL,
 		StremioInstallURL:     template.URL(stremioInstallURL(manifestURL)),

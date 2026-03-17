@@ -191,3 +191,60 @@ func TestConfigureHandlerTestActionRunsConnectionChecks(t *testing.T) {
 		t.Fatalf("expected config to be updated after test action, got %+v", after)
 	}
 }
+
+func TestConfigureHandlerSavesLanguageOrder(t *testing.T) {
+	originalConfig := getConfig()
+	defer setConfig(originalConfig)
+
+	originalConfigFile, hadConfigFile := os.LookupEnv("CONFIG_FILE")
+	defer func() {
+		if hadConfigFile {
+			_ = os.Setenv("CONFIG_FILE", originalConfigFile)
+		} else {
+			_ = os.Unsetenv("CONFIG_FILE")
+		}
+	}()
+
+	tmpConfigPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Setenv("CONFIG_FILE", tmpConfigPath); err != nil {
+		t.Fatalf("set CONFIG_FILE: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("primary_language", "Spanish")
+	form.Set("secondary_language", "English")
+
+	req := httptest.NewRequest(http.MethodPost, "/configure", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	configureHandler(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected status %d, got %d", http.StatusSeeOther, rr.Code)
+	}
+
+	after := getConfig()
+	if after.PrimaryLanguage != "Spanish" || after.SecondaryLanguage != "English" {
+		t.Fatalf("expected language order to be persisted, got primary=%q secondary=%q", after.PrimaryLanguage, after.SecondaryLanguage)
+	}
+}
+
+func TestConfigureHandlerRejectsInvalidLanguageOrder(t *testing.T) {
+	originalConfig := getConfig()
+	defer setConfig(originalConfig)
+
+	form := url.Values{}
+	form.Set("primary_language", "")
+	form.Set("secondary_language", "English")
+
+	req := httptest.NewRequest(http.MethodPost, "/configure", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	configureHandler(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
