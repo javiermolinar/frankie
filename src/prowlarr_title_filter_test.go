@@ -44,7 +44,8 @@ func TestBuildStreamsIncludesQualityInName(t *testing.T) {
 		Filename: "Movie.2024.1080p.WEB-DL.mkv",
 		Size:     1024,
 		Language: "English",
-		Host:     "alldebrid",
+		Host:     "magnet",
+		Indexer:  "Indexer.Name",
 	}}
 
 	streams := buildStreams("movie", results)
@@ -55,9 +56,55 @@ func TestBuildStreamsIncludesQualityInName(t *testing.T) {
 		t.Fatalf("unexpected stream name: %q", streams[0].Name)
 	}
 
-	expectedDescription := "Movie.2024.1080p.WEB-DL.mkv\n💾 1.0 KiB\n🗣️ English\n🌐 alldebrid"
+	expectedDescription := "Movie.2024.1080p.WEB-DL.mkv\n💾 1.0 KiB\n🗣️ English\n🔎 Indexer.Name"
 	if streams[0].Description != expectedDescription {
 		t.Fatalf("unexpected stream description: %q", streams[0].Description)
+	}
+}
+
+func TestBuildStreamsFallsBackToHostWhenIndexerMissing(t *testing.T) {
+	results := []DebridStreamResult{{
+		URL:      "https://video.example/stream",
+		Filename: "Movie.2024.1080p.WEB-DL.mkv",
+		Size:     1024,
+		Host:     "alldebrid",
+	}}
+
+	streams := buildStreams("movie", results)
+	if len(streams) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(streams))
+	}
+	if streams[0].Description != "Movie.2024.1080p.WEB-DL.mkv\n💾 1.0 KiB\n🌐 alldebrid" {
+		t.Fatalf("unexpected stream description: %q", streams[0].Description)
+	}
+}
+
+func TestDecorateDebridResultCarriesIndexer(t *testing.T) {
+	searchResult := ProwlarrSearchResult{
+		Title:   "Movie.2024.1080p.WEB-DL.ENG",
+		Size:    2048,
+		Indexer: "Nyaa",
+	}
+
+	got := decorateDebridResult(searchResult, DebridStreamResult{
+		URL:  " https://video.example/stream ",
+		Host: "magnet",
+	})
+
+	if got.URL != "https://video.example/stream" {
+		t.Fatalf("expected trimmed URL, got %q", got.URL)
+	}
+	if got.Filename != "Movie.2024.1080p.WEB-DL.ENG.mkv" {
+		t.Fatalf("unexpected filename: %q", got.Filename)
+	}
+	if got.Size != 2048 {
+		t.Fatalf("unexpected size: %d", got.Size)
+	}
+	if got.Language != "English" {
+		t.Fatalf("unexpected language: %q", got.Language)
+	}
+	if got.Indexer != "Nyaa" {
+		t.Fatalf("unexpected indexer: %q", got.Indexer)
 	}
 }
 

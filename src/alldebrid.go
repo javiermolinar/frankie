@@ -238,6 +238,7 @@ type DebridStreamResult struct {
 	Size     int64
 	Host     string
 	Language string
+	Indexer  string
 }
 
 // FileError represents the error details if a file is invalid.

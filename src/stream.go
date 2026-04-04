@@ -102,22 +102,9 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 				return
 			}
 
-			debridResult.URL = strings.TrimSpace(debridResult.URL)
+			debridResult = decorateDebridResult(searchResult, debridResult)
 			if debridResult.URL == "" {
 				return
-			}
-			if debridResult.Filename == "" {
-				debridResult.Filename = streamFilename(searchResult)
-			}
-			if debridResult.Size <= 0 {
-				debridResult.Size = searchResult.Size
-			}
-			if debridResult.Host == "" {
-				debridResult.Host = "alldebrid"
-			}
-			debridResult.Language = extractLanguageFromTitle(searchResult.Title)
-			if debridResult.Language == "" {
-				debridResult.Language = extractLanguageFromTitle(debridResult.Filename)
 			}
 
 			resolved[index] = debridResult
@@ -139,6 +126,25 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 	}
 
 	return readyResults
+}
+
+func decorateDebridResult(searchResult ProwlarrSearchResult, debridResult DebridStreamResult) DebridStreamResult {
+	debridResult.URL = strings.TrimSpace(debridResult.URL)
+	if debridResult.Filename == "" {
+		debridResult.Filename = streamFilename(searchResult)
+	}
+	if debridResult.Size <= 0 {
+		debridResult.Size = searchResult.Size
+	}
+	if debridResult.Host == "" {
+		debridResult.Host = "alldebrid"
+	}
+	debridResult.Language = extractLanguageFromTitle(searchResult.Title)
+	if debridResult.Language == "" {
+		debridResult.Language = extractLanguageFromTitle(debridResult.Filename)
+	}
+	debridResult.Indexer = strings.TrimSpace(searchResult.Indexer)
+	return debridResult
 }
 
 func classifyDebridError(err error) string {

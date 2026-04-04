@@ -449,8 +449,8 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 		if result.Language != "" {
 			descriptionParts = append(descriptionParts, "🗣️ "+result.Language)
 		}
-		if result.Host != "" {
-			descriptionParts = append(descriptionParts, "🌐 "+result.Host)
+		if sourceLine := streamSourceLine(result); sourceLine != "" {
+			descriptionParts = append(descriptionParts, sourceLine)
 		}
 
 		streams = append(streams, Stream{
@@ -467,6 +467,19 @@ func buildStreams(contentType string, results []DebridStreamResult) []Stream {
 	}
 
 	return streams
+}
+
+func streamSourceLine(result DebridStreamResult) string {
+	if indexer := strings.TrimSpace(result.Indexer); indexer != "" {
+		return "🔎 " + indexer
+	}
+
+	host := strings.TrimSpace(result.Host)
+	if host == "" || strings.EqualFold(host, "magnet") {
+		return ""
+	}
+
+	return "🌐 " + host
 }
 
 func dedupeProwlarrResults(results []ProwlarrSearchResult) []ProwlarrSearchResult {
