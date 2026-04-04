@@ -88,6 +88,7 @@ Or manually:
 - `PUBLIC_URL` (optional; for manifest asset URLs)
 - `PROWLARR_URL` (optional)
 - `PROWLARR_API_KEY` (optional)
+- `PROWLARR_SEARCH_TIMEOUT_SECONDS` (optional; default `5`, fail-fast timeout for each Prowlarr search request)
 - `ALLDEBRID_API_KEY` (optional)
 - `PRIMARY_LANGUAGE` (optional; must match one of the configure page language options)
 - `SECONDARY_LANGUAGE` (optional; same, and must be different from primary)

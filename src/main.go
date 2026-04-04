@@ -7,19 +7,21 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type Config struct {
-	Port              string `json:"port,omitempty"`
-	ProwlarrURL       string `json:"prowlarr_url,omitempty"`
-	ProwlarrAPIKey    string `json:"prowlarr_api_key,omitempty"`
-	AlldebridAPIKey   string `json:"alldebrid_api_key,omitempty"`
-	PrimaryLanguage   string `json:"primary_language,omitempty"`
-	SecondaryLanguage string `json:"secondary_language,omitempty"`
-	PublicURL         string `json:"public_url,omitempty"`
+	Port                         string `json:"port,omitempty"`
+	ProwlarrURL                  string `json:"prowlarr_url,omitempty"`
+	ProwlarrAPIKey               string `json:"prowlarr_api_key,omitempty"`
+	AlldebridAPIKey              string `json:"alldebrid_api_key,omitempty"`
+	ProwlarrSearchTimeoutSeconds int    `json:"prowlarr_search_timeout_seconds,omitempty"`
+	PrimaryLanguage              string `json:"primary_language,omitempty"`
+	SecondaryLanguage            string `json:"secondary_language,omitempty"`
+	PublicURL                    string `json:"public_url,omitempty"`
 }
 
 type Manifest struct {
@@ -71,13 +73,14 @@ type SeriesRequest struct {
 }
 
 const (
-	cinemetaBase                = "https://v3-cinemeta.strem.io/meta"
-	debridResolveConcurrency    = 6
-	prowlarrSearchLimit         = 100
-	debridResolveCandidateLimit = 50
-	streamResponseLimit         = 15
-	defaultPort                 = "3593"
-	defaultConfigPath           = "config.json"
+	cinemetaBase                        = "https://v3-cinemeta.strem.io/meta"
+	debridResolveConcurrency            = 6
+	prowlarrSearchLimit                 = 100
+	debridResolveCandidateLimit         = 50
+	streamResponseLimit                 = 15
+	defaultPort                         = "3593"
+	defaultConfigPath                   = "config.json"
+	defaultProwlarrSearchTimeoutSeconds = 5
 )
 
 var manifest = Manifest{
@@ -157,7 +160,7 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func loadConfig() Config {
-	cfg := Config{Port: defaultPort}
+	cfg := Config{Port: defaultPort, ProwlarrSearchTimeoutSeconds: defaultProwlarrSearchTimeoutSeconds}
 
 	filePath := configFilePath()
 	fileConfig, err := readConfigFile(filePath)
@@ -178,6 +181,15 @@ func loadConfig() Config {
 		SecondaryLanguage: os.Getenv("SECONDARY_LANGUAGE"),
 		PublicURL:         os.Getenv("PUBLIC_URL"),
 	})
+
+	if rawTimeout := strings.TrimSpace(os.Getenv("PROWLARR_SEARCH_TIMEOUT_SECONDS")); rawTimeout != "" {
+		parsedTimeout, err := strconv.Atoi(rawTimeout)
+		if err != nil {
+			log.Printf("invalid PROWLARR_SEARCH_TIMEOUT_SECONDS=%q: %v", rawTimeout, err)
+		} else {
+			cfg.ProwlarrSearchTimeoutSeconds = parsedTimeout
+		}
+	}
 
 	cfg = normalizeConfig(cfg)
 	if cfg.Port == "" {
@@ -208,6 +220,9 @@ func normalizeConfig(cfg Config) Config {
 		cfg.SecondaryLanguage = ""
 	}
 	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/")
+	if cfg.ProwlarrSearchTimeoutSeconds < 1 {
+		cfg.ProwlarrSearchTimeoutSeconds = defaultProwlarrSearchTimeoutSeconds
+	}
 	return cfg
 }
 
@@ -223,6 +238,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if strings.TrimSpace(override.AlldebridAPIKey) != "" {
 		base.AlldebridAPIKey = override.AlldebridAPIKey
+	}
+	if override.ProwlarrSearchTimeoutSeconds > 0 {
+		base.ProwlarrSearchTimeoutSeconds = override.ProwlarrSearchTimeoutSeconds
 	}
 	if strings.TrimSpace(override.PrimaryLanguage) != "" {
 		base.PrimaryLanguage = override.PrimaryLanguage
