@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 )
 
 type ProwlarrSearchResult struct {
@@ -186,52 +186,70 @@ func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, err
 		return nil, "", fmt.Errorf("cannot build prowlarr query")
 	}
 
-	primaryResults, primaryRaw, primaryErr := runProwlarrSearch(query, searchType, prowlarrSearchLimit)
-	if primaryErr == nil && len(primaryResults) > 0 {
-		return dedupeProwlarrResults(primaryResults), primaryRaw, nil
+	cfg := getConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), prowlarrSearchTimeout(cfg))
+	defer cancel()
+
+	type searchOutcome struct {
+		attempted bool
+		results   []ProwlarrSearchResult
+		raw       string
+		err       error
 	}
+
+	var primary searchOutcome
+	var fallback searchOutcome
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		primary.attempted = true
+		primary.results, primary.raw, primary.err = runProwlarrSearch(ctx, query, searchType, prowlarrSearchLimit)
+	}()
 
 	lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
-	if lookupID == "" {
-		if primaryErr != nil {
-			return nil, primaryRaw, primaryErr
+	if lookupID != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			meta, _, err := fetchCinemeta(ctx, contentType, lookupID)
+			if err != nil {
+				return
+			}
+
+			fallbackQuery := buildProwlarrFallbackQuery(contentType, id, meta)
+			if fallbackQuery == "" {
+				return
+			}
+
+			fallbackSearchType := ""
+			if contentType == "series" {
+				fallbackSearchType = "tvsearch"
+			}
+
+			fallback.attempted = true
+			fallback.results, fallback.raw, fallback.err = runProwlarrSearch(ctx, fallbackQuery, fallbackSearchType, prowlarrSearchLimit)
+		}()
+	}
+
+	wg.Wait()
+
+	if primary.err != nil {
+		if fallback.attempted && fallback.err == nil {
+			return dedupeProwlarrResults(fallback.results), combineSearchRaw(primary.raw, fallback.raw), nil
 		}
-		return dedupeProwlarrResults(primaryResults), primaryRaw, nil
+		return nil, combineSearchRaw(primary.raw, fallback.raw), primary.err
 	}
 
-	meta, _, metaErr := fetchCinemeta(contentType, lookupID)
-	if metaErr != nil {
-		if primaryErr != nil {
-			return nil, primaryRaw, primaryErr
-		}
-		return dedupeProwlarrResults(primaryResults), primaryRaw, nil
+	merged := append([]ProwlarrSearchResult{}, primary.results...)
+	if fallback.attempted && fallback.err == nil && len(fallback.results) > 0 {
+		merged = append(merged, fallback.results...)
 	}
 
-	fallbackQuery := buildProwlarrFallbackQuery(contentType, id, meta)
-	if fallbackQuery == "" {
-		if primaryErr != nil {
-			return nil, primaryRaw, primaryErr
-		}
-		return dedupeProwlarrResults(primaryResults), primaryRaw, nil
-	}
-
-	fallbackSearchType := ""
-	if contentType == "series" {
-		fallbackSearchType = "tvsearch"
-	}
-
-	fallbackResults, fallbackRaw, fallbackErr := runProwlarrSearch(fallbackQuery, fallbackSearchType, prowlarrSearchLimit)
-	if fallbackErr == nil {
-		merged := append([]ProwlarrSearchResult{}, primaryResults...)
-		merged = append(merged, fallbackResults...)
-		return dedupeProwlarrResults(merged), combineSearchRaw(primaryRaw, fallbackRaw), nil
-	}
-
-	if primaryErr != nil {
-		return nil, combineSearchRaw(primaryRaw, fallbackRaw), primaryErr
-	}
-
-	return dedupeProwlarrResults(primaryResults), combineSearchRaw(primaryRaw, fallbackRaw), nil
+	return dedupeProwlarrResults(merged), combineSearchRaw(primary.raw, fallback.raw), nil
 }
 
 func combineSearchRaw(first, second string) string {
@@ -246,7 +264,7 @@ func combineSearchRaw(first, second string) string {
 	return first + "\n" + second
 }
 
-func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
+func runProwlarrSearch(ctx context.Context, query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
 	cfg := getConfig()
 	baseURL, err := url.Parse(cfg.ProwlarrURL)
 	if err != nil {
@@ -264,21 +282,20 @@ func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchRes
 	}
 	baseURL.RawQuery = queryValues.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), prowlarrSearchTimeout(cfg))
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL.String(), nil)
 	if err != nil {
 		return nil, "", err
 	}
-	searchTimeout := time.Duration(cfg.ProwlarrSearchTimeoutSeconds) * time.Second
-	if searchTimeout <= 0 {
-		searchTimeout = time.Duration(defaultProwlarrSearchTimeoutSeconds) * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
-	defer cancel()
-	req = req.WithContext(ctx)
 	req.Header.Set("X-Api-Key", cfg.ProwlarrAPIKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, "", err
 	}

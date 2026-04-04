@@ -99,6 +99,24 @@ var (
 	config     = loadConfig()
 )
 
+func doRequest(req *http.Request) (*http.Response, error) {
+	if _, hasDeadline := req.Context().Deadline(); !hasDeadline {
+		return httpClient.Do(req)
+	}
+
+	client := *httpClient
+	client.Timeout = 0
+	return client.Do(req)
+}
+
+func prowlarrSearchTimeout(cfg Config) time.Duration {
+	seconds := cfg.ProwlarrSearchTimeoutSeconds
+	if seconds < 1 {
+		seconds = defaultProwlarrSearchTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", homeHandler)

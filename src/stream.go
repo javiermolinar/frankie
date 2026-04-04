@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -199,15 +200,19 @@ func metadataLookupID(contentType, id string) string {
 	return parts[0]
 }
 
-func fetchCinemeta(contentType, id string) (CinemetaMeta, string, error) {
+func fetchCinemeta(ctx context.Context, contentType, id string) (CinemetaMeta, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	url := fmt.Sprintf("%s/%s/%s.json", cinemetaBase, contentType, id)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return CinemetaMeta{}, "", err
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := doRequest(req)
 	if err != nil {
 		return CinemetaMeta{}, "", err
 	}
