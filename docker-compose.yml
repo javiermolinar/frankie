@@ -10,6 +10,7 @@ services:
       CONFIG_FILE: "/config/config.json"
       # Frankie can reach Prowlarr using the service name below.
       PROWLARR_URL: "http://prowlarr:9696"
+      PROWLARR_SEARCH_TIMEOUT_SECONDS: "5"
       # Optional if exposed behind a reverse proxy / domain:
       # PUBLIC_URL: "https://your-domain.example"
     volumes:

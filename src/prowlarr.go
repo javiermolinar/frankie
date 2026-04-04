@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -185,6 +186,10 @@ func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, err
 		return nil, "", fmt.Errorf("cannot build prowlarr query")
 	}
 
+	cfg := getConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), prowlarrSearchTimeout(cfg))
+	defer cancel()
+
 	type searchOutcome struct {
 		attempted bool
 		results   []ProwlarrSearchResult
@@ -201,44 +206,42 @@ func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, err
 	go func() {
 		defer wg.Done()
 		primary.attempted = true
-		primary.results, primary.raw, primary.err = runProwlarrSearch(query, searchType, prowlarrSearchLimit)
+		primary.results, primary.raw, primary.err = runProwlarrSearch(ctx, query, searchType, prowlarrSearchLimit)
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
+	if lookupID != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-		lookupID := strings.TrimSpace(metadataLookupID(contentType, id))
-		if lookupID == "" {
-			return
-		}
+			meta, _, err := fetchCinemeta(ctx, contentType, lookupID)
+			if err != nil {
+				return
+			}
 
-		meta, _, err := fetchCinemeta(contentType, lookupID)
-		if err != nil {
-			return
-		}
+			fallbackQuery := buildProwlarrFallbackQuery(contentType, id, meta)
+			if fallbackQuery == "" {
+				return
+			}
 
-		fallbackQuery := buildProwlarrFallbackQuery(contentType, id, meta)
-		if fallbackQuery == "" {
-			return
-		}
+			fallbackSearchType := ""
+			if contentType == "series" {
+				fallbackSearchType = "tvsearch"
+			}
 
-		fallbackSearchType := ""
-		if contentType == "series" {
-			fallbackSearchType = "tvsearch"
-		}
-
-		fallback.attempted = true
-		fallback.results, fallback.raw, fallback.err = runProwlarrSearch(fallbackQuery, fallbackSearchType, prowlarrSearchLimit)
-	}()
+			fallback.attempted = true
+			fallback.results, fallback.raw, fallback.err = runProwlarrSearch(ctx, fallbackQuery, fallbackSearchType, prowlarrSearchLimit)
+		}()
+	}
 
 	wg.Wait()
 
 	if primary.err != nil {
 		if fallback.attempted && fallback.err == nil {
-			return dedupeProwlarrResults(fallback.results), fallback.raw, nil
+			return dedupeProwlarrResults(fallback.results), combineSearchRaw(primary.raw, fallback.raw), nil
 		}
-		return nil, primary.raw, primary.err
+		return nil, combineSearchRaw(primary.raw, fallback.raw), primary.err
 	}
 
 	merged := append([]ProwlarrSearchResult{}, primary.results...)
@@ -246,20 +249,22 @@ func searchProwlarr(contentType, id string) ([]ProwlarrSearchResult, string, err
 		merged = append(merged, fallback.results...)
 	}
 
-	merged = dedupeProwlarrResults(merged)
-	raw := strings.TrimSpace(primary.raw)
-	if strings.TrimSpace(fallback.raw) != "" {
-		if raw == "" {
-			raw = fallback.raw
-		} else {
-			raw = raw + "\n" + fallback.raw
-		}
-	}
-
-	return merged, raw, nil
+	return dedupeProwlarrResults(merged), combineSearchRaw(primary.raw, fallback.raw), nil
 }
 
-func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
+func combineSearchRaw(first, second string) string {
+	first = strings.TrimSpace(first)
+	second = strings.TrimSpace(second)
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "\n" + second
+}
+
+func runProwlarrSearch(ctx context.Context, query, searchType string, limit int) ([]ProwlarrSearchResult, string, error) {
 	cfg := getConfig()
 	baseURL, err := url.Parse(cfg.ProwlarrURL)
 	if err != nil {
@@ -277,14 +282,20 @@ func runProwlarrSearch(query, searchType string, limit int) ([]ProwlarrSearchRes
 	}
 	baseURL.RawQuery = queryValues.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), prowlarrSearchTimeout(cfg))
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL.String(), nil)
 	if err != nil {
 		return nil, "", err
 	}
 	req.Header.Set("X-Api-Key", cfg.ProwlarrAPIKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, "", err
 	}
