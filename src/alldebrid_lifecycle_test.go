@@ -123,6 +123,40 @@ func TestResolveDebridResultsUploadsOnlyInstantlyAvailableMagnets(t *testing.T) 
 	}
 }
 
+func TestResolveDebridResultsFallsBackToGuardedUploadWhenInstantIsUnsupported(t *testing.T) {
+	var uploadCalls atomic.Int32
+	var deleteCalls atomic.Int32
+	setupAllDebridTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case magnetInstantPath:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"status":"error","error":{"code":"404","message":"Endpoint doesn't exist"}}`)
+		case magnetUploadPath:
+			uploadCalls.Add(1)
+			fmt.Fprintf(w, `{"status":"success","data":{"magnets":[{"id":303,"hash":%q,"ready":false}]}}`, strings.Repeat("f", 40))
+		case magnetStatusPath:
+			t.Error("non-ready fallback upload should not require a status request")
+			fmt.Fprint(w, `{"status":"success","data":{"magnets":[]}}`)
+		case magnetDeletePath:
+			deleteCalls.Add(1)
+			fmt.Fprint(w, `{"status":"success"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	})
+
+	results := []ProwlarrSearchResult{{Title: "Not ready", Guid: "magnet:?xt=urn:btih:" + strings.Repeat("f", 40)}}
+	streams := resolveDebridResults(results)
+	if len(streams) != 0 {
+		t.Fatalf("expected no streams, got %#v", streams)
+	}
+	if uploadCalls.Load() != 1 || deleteCalls.Load() != 1 {
+		t.Fatalf("expected one guarded upload and cleanup, got uploads=%d deletes=%d", uploadCalls.Load(), deleteCalls.Load())
+	}
+}
+
 func TestGetStreamLinkDeletesNonReadyMagnet(t *testing.T) {
 	var deleteCalls atomic.Int32
 	registryPath := setupAllDebridTest(t, func(w http.ResponseWriter, r *http.Request) {

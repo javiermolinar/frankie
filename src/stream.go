@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -101,13 +102,18 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 		uniqueMagnets = append(uniqueMagnets, magnetURI)
 	}
 
-	// Instant availability is read-only. Never upload a candidate unless AllDebrid
-	// says it is already cached; this prevents dead torrents accumulating.
+	// Instant availability avoids uploads when the service supports it. Some
+	// AllDebrid deployments return 404 for this documented endpoint; guarded
+	// uploads with immediate non-ready cleanup are the safe fallback.
 	available := map[string]bool{}
 	var instantErr error
 	if len(uniqueMagnets) > 0 {
 		available, instantErr = checkInstantMagnets(uniqueMagnets)
-		if instantErr != nil {
+		if errors.Is(instantErr, errInstantAvailabilityUnsupported) {
+			log.Printf("instant availability unsupported; using guarded uploads with cleanup")
+			available = nil
+			instantErr = nil
+		} else if instantErr != nil {
 			log.Printf("instant availability check failed: %v", instantErr)
 			for range uniqueMagnets {
 				countFailure("instant_error")
@@ -125,7 +131,7 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 			continue
 		}
 		seenUploads[hash] = struct{}{}
-		if !available[hash] {
+		if available != nil && !available[hash] {
 			countFailure("not_cached")
 			continue
 		}

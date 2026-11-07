@@ -306,6 +306,10 @@ func getStreamLink(magnet string) (DebridStreamResult, error) {
 		readyMagnets.remove(magnetID)
 	}()
 
+	if !uploaded.Ready {
+		return DebridStreamResult{}, fmt.Errorf("magnet %d is not ready", magnetID)
+	}
+
 	statusResp, err := magnetStatus(magnetID, magnetStatusReady)
 	if err != nil {
 		return DebridStreamResult{}, err

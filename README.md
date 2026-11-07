@@ -71,7 +71,7 @@ Then:
 
 ### AllDebrid magnet lifecycle
 
-Frankie uses AllDebrid's instant-availability API before uploading anything. Uncached Prowlarr candidates are skipped, and at most 15 candidates are considered per request.
+Frankie uses AllDebrid's instant-availability API when available and considers at most 15 candidates per request. AllDebrid deployments where that endpoint returns 404 use guarded uploads instead: non-ready uploads are removed immediately, so they cannot accumulate.
 
 - Failed and non-ready uploads are deleted immediately.
 - Successfully unlocked magnets remain available for playback for 24 hours after their last use.

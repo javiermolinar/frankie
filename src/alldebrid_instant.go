@@ -4,6 +4,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 )
 
 const instantAvailabilityBatchSize = 50
+
+var errInstantAvailabilityUnsupported = errors.New("instant availability endpoint is unsupported")
 
 type InstantMagnetResponse struct {
 	Status string            `json:"status"`
@@ -77,6 +80,9 @@ func checkInstantMagnetBatch(magnets []string) (map[string]bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errInstantAvailabilityUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
