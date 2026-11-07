@@ -69,6 +69,15 @@ Then:
 - Prowlarr check: `GET /api/v1/system/status` on your configured Prowlarr URL
 - AllDebrid check: `GET https://api.alldebrid.com/v4/user`
 
+### AllDebrid magnet lifecycle
+
+Frankie uses AllDebrid's instant-availability API before uploading anything. Uncached Prowlarr candidates are skipped, and at most 15 candidates are considered per request.
+
+- Failed and non-ready uploads are deleted immediately.
+- Successfully unlocked magnets remain available for playback for 24 hours after their last use.
+- Frankie stores only the IDs it created in `frankie_magnets.json`, next to `config.json`, and runs expiry cleanup hourly.
+- Cleanup never deletes unrelated magnets from the same AllDebrid account.
+
 ### Install in Stremio
 
 From `/configure`:

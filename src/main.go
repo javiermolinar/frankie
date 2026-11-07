@@ -76,7 +76,7 @@ const (
 	cinemetaBase                        = "https://v3-cinemeta.strem.io/meta"
 	debridResolveConcurrency            = 6
 	prowlarrSearchLimit                 = 100
-	debridResolveCandidateLimit         = 50
+	debridResolveCandidateLimit         = 15
 	streamResponseLimit                 = 15
 	defaultPort                         = "3593"
 	defaultConfigPath                   = "config.json"
@@ -118,6 +118,8 @@ func prowlarrSearchTimeout(cfg Config) time.Duration {
 }
 
 func main() {
+	go runMagnetCleanup()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", homeHandler)
 	mux.HandleFunc("/configure", configureHandler)

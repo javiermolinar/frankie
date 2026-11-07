@@ -5,26 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	allDebridBaseURL = "https://api.alldebrid.com"
-
-	magnetUploadPath = "/v4/magnet/upload"
-	magnetStatusPath = "/v4.1/magnet/status"
-	unlockLinkPath   = "/v4/link/unlock"
+	magnetUploadPath  = "/v4/magnet/upload"
+	magnetInstantPath = "/v4/magnet/instant"
+	magnetStatusPath  = "/v4.1/magnet/status"
+	magnetDeletePath  = "/v4/magnet/delete"
+	unlockLinkPath    = "/v4/link/unlock"
 
 	magnetStatusReady = "ready"
 )
+
+var allDebridBaseURL = "https://api.alldebrid.com"
 
 // UploadMagnetResponse represents the top-level upload response JSON structure.
 type UploadMagnetResponse struct {
 	Status string           `json:"status"`
 	Data   UploadMagnetData `json:"data"`
+	Error  *FileError       `json:"error,omitempty"`
 }
 
 type UploadMagnetData struct {
@@ -34,12 +39,14 @@ type UploadMagnetData struct {
 type UnlockLinkRespose struct {
 	Status string         `json:"status"`
 	Data   UnlockLinkData `json:"data"`
+	Error  *FileError     `json:"error,omitempty"`
 }
 
 // MagnetStatusResponse represents /magnet/status response.
 type MagnetStatusResponse struct {
 	Status string           `json:"status"`
 	Data   MagnetStatusData `json:"data"`
+	Error  *FileError       `json:"error,omitempty"`
 }
 
 type MagnetStatusData struct {
@@ -261,10 +268,43 @@ func getStreamLink(magnet string) (DebridStreamResult, error) {
 		return DebridStreamResult{}, fmt.Errorf("upload succeeded but returned no magnets")
 	}
 
-	magnetID := uploadResp.Data.Magnets[0].ID
+	uploaded := uploadResp.Data.Magnets[0]
+	magnetID := uploaded.ID
+	if uploaded.Error != nil {
+		if magnetID > 0 {
+			if err := deleteMagnet(magnetID); err != nil {
+				log.Printf("delete rejected magnet id=%d: %v", magnetID, err)
+			}
+		}
+		return DebridStreamResult{}, allDebridAPIError("upload magnet", "error", uploaded.Error)
+	}
+
 	if magnetID == 0 {
 		return DebridStreamResult{}, fmt.Errorf("upload succeeded but returned invalid magnet id")
 	}
+
+	hash := strings.ToLower(strings.TrimSpace(uploaded.Hash))
+	if hash == "" {
+		hash = magnetInfoHash(magnet)
+	}
+	if err := readyMagnets.track(magnetID, hash, time.Now()); err != nil {
+		if deleteErr := deleteMagnet(magnetID); deleteErr != nil {
+			log.Printf("delete untracked magnet id=%d: %v", magnetID, deleteErr)
+		}
+		return DebridStreamResult{}, fmt.Errorf("track uploaded magnet: %w", err)
+	}
+
+	keepMagnet := false
+	defer func() {
+		if keepMagnet {
+			return
+		}
+		if err := deleteMagnet(magnetID); err != nil {
+			log.Printf("delete failed magnet id=%d: %v", magnetID, err)
+			return
+		}
+		readyMagnets.remove(magnetID)
+	}()
 
 	statusResp, err := magnetStatus(magnetID, magnetStatusReady)
 	if err != nil {
@@ -288,9 +328,6 @@ func getStreamLink(magnet string) (DebridStreamResult, error) {
 	if err != nil {
 		return DebridStreamResult{}, err
 	}
-	if unlockResp.Status != "success" {
-		return DebridStreamResult{}, fmt.Errorf("unlock link failed with status %q", unlockResp.Status)
-	}
 	if strings.TrimSpace(unlockResp.Data.Link) == "" {
 		return DebridStreamResult{}, fmt.Errorf("unlock link response did not include a stream link")
 	}
@@ -305,6 +342,7 @@ func getStreamLink(magnet string) (DebridStreamResult, error) {
 		size = selectedFile.Size
 	}
 
+	keepMagnet = true
 	return DebridStreamResult{
 		URL:      unlockResp.Data.Link,
 		Filename: filename,
@@ -381,7 +419,7 @@ func magnetStatus(id int, statusFilter string) (MagnetStatusResponse, error) {
 		return MagnetStatusResponse{}, err
 	}
 	if result.Status != "success" {
-		return MagnetStatusResponse{}, fmt.Errorf("magnet status failed with status %q", result.Status)
+		return MagnetStatusResponse{}, allDebridAPIError("magnet status failed", result.Status, result.Error)
 	}
 
 	return result, nil
@@ -423,6 +461,10 @@ func unlockLink(link string) (UnlockLinkRespose, error) {
 		return UnlockLinkRespose{}, err
 	}
 
+	if result.Status != "success" {
+		return UnlockLinkRespose{}, allDebridAPIError("unlock link failed", result.Status, result.Error)
+	}
+
 	return result, nil
 }
 
@@ -431,7 +473,8 @@ func uploadMagnet(magnet string) (UploadMagnetResponse, error) {
 	baseURL, _ := url.Parse(allDebridBaseURL)
 	baseURL.Path = magnetUploadPath
 	form := url.Values{}
-	form.Set("magnets", magnet)
+	form.Set("agent", "Frankie")
+	form.Set("magnets[]", magnet)
 
 	encodedData := form.Encode()
 
@@ -460,6 +503,10 @@ func uploadMagnet(magnet string) (UploadMagnetResponse, error) {
 	var result UploadMagnetResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return UploadMagnetResponse{}, err
+	}
+
+	if result.Status != "success" {
+		return UploadMagnetResponse{}, allDebridAPIError("upload failed", result.Status, result.Error)
 	}
 
 	return result, nil

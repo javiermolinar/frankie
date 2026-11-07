@@ -61,17 +61,6 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 		return []DebridStreamResult{}
 	}
 
-	workerCount := debridResolveConcurrency
-	if len(sortedResults) < workerCount {
-		workerCount = len(sortedResults)
-	}
-	if workerCount < 1 {
-		return []DebridStreamResult{}
-	}
-
-	sem := make(chan struct{}, workerCount)
-	resolved := make([]DebridStreamResult, len(sortedResults))
-
 	failureCounts := map[string]int{}
 	var failureMu sync.Mutex
 	countFailure := func(reason string) {
@@ -80,41 +69,92 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 		failureMu.Unlock()
 	}
 
-	var wg sync.WaitGroup
-	for i, sr := range sortedResults {
-		wg.Add(1)
-		go func(index int, searchResult ProwlarrSearchResult) {
-			defer wg.Done()
+	// Resolving Prowlarr redirects does not create any AllDebrid state.
+	magnetURIs := make([]string, len(sortedResults))
+	runDebridWorkers(len(sortedResults), func(index int) {
+		magnetURI, err := resolveMagnetURI(sortedResults[index])
+		if err != nil {
+			countFailure("magnet_resolve")
+			log.Printf("resolveMagnetURI error: %v", err)
+			return
+		}
+		magnetURIs[index] = magnetURI
+	})
 
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			magnetURI, err := resolveMagnetURI(searchResult)
-			if err != nil {
-				countFailure("magnet_resolve")
-				log.Printf("resolveMagnetURI error: %v", err)
-				return
-			}
-
-			debridResult, err := getStreamLink(magnetURI)
-			if err != nil {
-				countFailure(classifyDebridError(err))
-				return
-			}
-
-			debridResult = decorateDebridResult(searchResult, debridResult)
-			if debridResult.URL == "" {
-				return
-			}
-
-			resolved[index] = debridResult
-		}(i, sr)
+	candidateHashes := make([]string, len(sortedResults))
+	uniqueMagnets := make([]string, 0, len(sortedResults))
+	seenMagnets := make(map[string]struct{}, len(sortedResults))
+	for index, magnetURI := range magnetURIs {
+		if magnetURI == "" {
+			continue
+		}
+		hash := magnetInfoHash(magnetURI)
+		if hash == "" {
+			countFailure("invalid_magnet")
+			continue
+		}
+		candidateHashes[index] = hash
+		if _, seen := seenMagnets[hash]; seen {
+			continue
+		}
+		seenMagnets[hash] = struct{}{}
+		uniqueMagnets = append(uniqueMagnets, magnetURI)
 	}
 
-	wg.Wait()
+	// Instant availability is read-only. Never upload a candidate unless AllDebrid
+	// says it is already cached; this prevents dead torrents accumulating.
+	available := map[string]bool{}
+	var instantErr error
+	if len(uniqueMagnets) > 0 {
+		available, instantErr = checkInstantMagnets(uniqueMagnets)
+		if instantErr != nil {
+			log.Printf("instant availability check failed: %v", instantErr)
+			for range uniqueMagnets {
+				countFailure("instant_error")
+			}
+		}
+	}
+
+	eligible := make([]int, 0, len(sortedResults))
+	seenUploads := make(map[string]struct{}, len(sortedResults))
+	for index, hash := range candidateHashes {
+		if hash == "" || instantErr != nil {
+			continue
+		}
+		if _, seen := seenUploads[hash]; seen {
+			continue
+		}
+		seenUploads[hash] = struct{}{}
+		if !available[hash] {
+			countFailure("not_cached")
+			continue
+		}
+		eligible = append(eligible, index)
+	}
+
+	resolved := make([]DebridStreamResult, len(sortedResults))
+	runDebridWorkers(len(eligible), func(workerIndex int) {
+		index := eligible[workerIndex]
+		debridResult, err := getStreamLink(magnetURIs[index])
+		if err != nil {
+			countFailure(classifyDebridError(err))
+			log.Printf("resolve cached magnet error: %v", err)
+			return
+		}
+
+		debridResult = decorateDebridResult(sortedResults[index], debridResult)
+		if debridResult.URL == "" {
+			return
+		}
+		resolved[index] = debridResult
+	})
 
 	if len(failureCounts) > 0 {
-		log.Printf("debrid resolve failures total=%d details=%v", len(sortedResults), failureCounts)
+		total := 0
+		for _, count := range failureCounts {
+			total += count
+		}
+		log.Printf("debrid resolve failures total=%d details=%v", total, failureCounts)
 	}
 
 	readyResults := make([]DebridStreamResult, 0, len(resolved))
@@ -126,6 +166,29 @@ func resolveDebridResults(sortedResults []ProwlarrSearchResult) []DebridStreamRe
 	}
 
 	return readyResults
+}
+
+func runDebridWorkers(count int, work func(index int)) {
+	workerCount := debridResolveConcurrency
+	if count < workerCount {
+		workerCount = count
+	}
+	if workerCount < 1 {
+		return
+	}
+
+	sem := make(chan struct{}, workerCount)
+	var wg sync.WaitGroup
+	for index := 0; index < count; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			work(index)
+		}()
+	}
+	wg.Wait()
 }
 
 func decorateDebridResult(searchResult ProwlarrSearchResult, debridResult DebridStreamResult) DebridStreamResult {
